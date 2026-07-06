@@ -221,6 +221,21 @@ diary without leaving it. The unit's stop hook restarts xochitl even if
 riddle dies uncleanly. If anything wedges:
 `ssh root@10.11.99.1 'systemctl start xochitl'`.
 
+### reMarkable 2 (windowed only)
+
+The rM2 build targets 32-bit ARM and the rM2's 1404×1872 panel, and runs in
+windowed (AppLoad/qtfb) mode only — the takeover engine is Paper Pro-specific.
+Requires [xovi + AppLoad](https://github.com/asivery/rm-appload) on the device.
+
+```sh
+rustup target add armv7-unknown-linux-musleabihf
+./build-rm2.sh     # needs cargo-zigbuild + zig; emits dist/rm2/riddle/
+scp -O -r dist/rm2/riddle root@10.11.99.1:/home/root/xovi/exthome/appload/
+```
+
+Then add your key in `oracle.env` as above, Reload in AppLoad, and open
+**The Diary**. Tested on reMarkable 2, OS 3.x.
+
 ## What leaves the device
 
 - Each committed page is rasterized to a small grayscale PNG and sent to the
