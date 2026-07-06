@@ -235,7 +235,10 @@ rustup target add armv7-unknown-linux-musleabihf   # once; needs zig + cargo-zig
 
 Full walkthrough, manual steps, and troubleshooting:
 **[docs/rm2-setup.md](docs/rm2-setup.md)**. The rM2 runs in windowed
-(AppLoad/qtfb) mode only — the takeover engine is Paper Pro-specific.
+(AppLoad/qtfb) mode only — the takeover engine is Paper Pro-specific, so
+your own ink echoes with visible latency (tunable via `RIDDLE_FLUSH_MS`
+and `RIDDLE_IDLE_MS` in `oracle.env`, but the compositor pipeline sets a
+floor). Treat it as a delightful demo, not a notes replacement.
 
 ## What leaves the device
 
