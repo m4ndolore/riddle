@@ -38,7 +38,6 @@ use surface::{Surface, BLACK, FADED, WHITE};
 const FONT_TTF: &[u8] = include_bytes!("../fonts/DancingScript.ttf");
 const PNG_PATH: &str = "/tmp/riddle-page.png";
 
-const IDLE_COMMIT: Duration = Duration::from_millis(2800);
 /// How long the diary waits on a silent oracle before giving up on the turn.
 /// Generous: thinking models can lead with a long silence.
 const ORACLE_PATIENCE: Duration = Duration::from_secs(120);
@@ -61,6 +60,13 @@ oracle.env.example for every RIDDLE_* variable.
 ";
 
 type OracleRx = mpsc::Receiver<Result<Event, String>>;
+
+/// Millisecond duration from the environment, with a default.
+fn env_ms(name: &str, default: u64) -> Duration {
+    Duration::from_millis(
+        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default),
+    )
+}
 
 enum State {
     Listening { last_pen: Option<Instant> },
@@ -259,8 +265,14 @@ fn run() -> std::io::Result<()> {
     let mut stylus_tapped = false;
     let mut ink_dirty = BBox::empty();
     let mut last_flush = Instant::now();
-    // Takeover swaps are cheap and synchronous; qtfb needs coalescing.
-    let flush_every = if takeover { Duration::from_millis(8) } else { Duration::from_millis(35) };
+    // Takeover swaps are cheap and synchronous; qtfb needs coalescing — but
+    // the interval is the dominant tunable ink latency, so let users trade
+    // CPU for feel (RIDDLE_FLUSH_MS).
+    let flush_every =
+        if takeover { Duration::from_millis(8) } else { env_ms("RIDDLE_FLUSH_MS", 12) };
+    // How long the pen must rest before the diary drinks the page. Raise it
+    // if it fires mid-thought while you pause (RIDDLE_IDLE_MS).
+    let idle_commit = env_ms("RIDDLE_IDLE_MS", 2800);
 
     eprintln!("riddle: the diary is open");
 
@@ -416,7 +428,7 @@ fn run() -> std::io::Result<()> {
         // ---- state machine ----
         state = match state {
             State::Listening { last_pen } => match last_pen {
-                Some(t) if !pen_down && t.elapsed() >= IDLE_COMMIT && !user_ink.is_empty() => {
+                Some(t) if !pen_down && t.elapsed() >= idle_commit && !user_ink.is_empty() => {
                     if region_all_white(&surf, user_ink.bbox) {
                         // Everything was erased before the pause: nothing to
                         // commit (and no phantom "?" from erased strokes).
