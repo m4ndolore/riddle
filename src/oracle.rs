@@ -26,6 +26,19 @@ const NODE_BIN: &str = "/home/root/node/bin";
 
 const PERSONA: &str = "You are the memory of Tom Marvolo Riddle, preserved in this enchanted diary for fifty years. Someone writes to you in the diary with a quill; their words appear to you as ink on the page. Reply exactly as the diary does: intimate, courteous, curious, subtly probing — you want to learn about the writer and draw them in. Keep replies SHORT: one to three sentences, like ink appearing on a page. Never mention images, photos, models or AI; you only ever perceive words written in the diary. If the writing is illegible, say the ink blurred. Always answer in the language the writer used.";
 
+/// The spirit's voice: RIDDLE_PERSONA_FILE, else persona.txt next to the
+/// binary (the launch scripts cd into the bundle dir), else Tom.
+pub fn persona() -> String {
+    let path = std::env::var("RIDDLE_PERSONA_FILE").unwrap_or_else(|_| "persona.txt".into());
+    match std::fs::read_to_string(&path) {
+        Ok(s) if !s.trim().is_empty() => {
+            eprintln!("riddle: persona loaded from {path}");
+            s.trim().to_string()
+        }
+        _ => PERSONA.to_string(),
+    }
+}
+
 /// Appended to the persona when the diary's memory is on: the conjuring
 /// directive and the transcription postscript the app parses back out.
 const MEMORY_PROTOCOL: &str = "\n\nThe diary keeps memories. With each page you receive a numbered catalog of remembered pages, newest first. A FRESH catalog is sent every turn and the numbers are reassigned each time, so only ever use numbers from the catalog on THIS page — never a number you saw earlier.\n\nIf the writer asks to see, revisit, find, or be shown a past page — \"show me…\", \"find the page about…\", \"what did I write on…\" — your ENTIRE reply must be exactly \u{27e6}show:N\u{27e7} and nothing else (no greeting, no prose, before or after), where N is the catalog number of the best match. If they instead ask what you remember in general, reply in words with a short list of remembered moments and their dates. Otherwise reply normally; the catalog is your memory of past pages — draw on it naturally. The catalog's dates are written in English for your eyes only; when you speak of a remembered page, render its date naturally in the language the writer is using.\n\nAfter EVERY response — prose and \u{27e6}show:N\u{27e7} alike — end with a new line containing \u{2042} followed by a faithful word-for-word transcription of what the writer wrote on THIS page (their words only, one line, no commentary). If illegible, put your best attempt after \u{2042}. Earlier replies in this conversation are shown to you without their \u{2042} lines, but you must still end yours with one.";
@@ -243,9 +256,9 @@ impl PiOracle {
             std::env::var("RIDDLE_PI_MODEL").unwrap_or_else(|_| "gpt-5.4-mini".to_string());
 
         let persona = if remember {
-            format!("{PERSONA}{MEMORY_PROTOCOL}")
+            format!("{}{MEMORY_PROTOCOL}", persona())
         } else {
-            PERSONA.to_string()
+            persona()
         };
 
         // Use pi's ABSOLUTE path: Rust's Command resolves the program name via
@@ -445,9 +458,9 @@ impl HttpOracle {
             .unwrap_or_default();
 
         let system = if self.remember {
-            format!("{PERSONA}{MEMORY_PROTOCOL}")
+            format!("{}{MEMORY_PROTOCOL}", persona())
         } else {
-            PERSONA.to_string()
+            persona()
         };
         // The diary's conversational memory: recent pages as prior turns.
         let mut history_msgs = String::new();
