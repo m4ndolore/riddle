@@ -81,3 +81,57 @@ pub fn prepare(raw_path: &str, png_path: &str) -> Option<()> {
         .map_err(|e| eprintln!("riddle: ask png encode failed: {e}"));
     ok.ok().map(|_| ())
 }
+
+/// Where xochitl keeps notebooks. Each `<uuid>.thumbnails/<page>.png` is a
+/// rendered image of a page — refreshed when you leave/close the page.
+const XOCHITL_DIR: &str = "/home/root/.local/share/remarkable/xochitl";
+
+/// Track B: instead of snapshotting the live screen, find the most recently
+/// rendered stock-notes page and hand it to the oracle. You write in xochitl
+/// at native latency, close the page (which re-renders its thumbnail), then
+/// open The Diary. Returns the path of the newest page PNG, or None.
+///
+/// Freshness depends on xochitl regenerating the thumbnail on page close — the
+/// one thing to verify on-device. `RIDDLE_ASK_MAX_AGE` (seconds, default 900)
+/// guards against asking about a stale page if you didn't just write one.
+pub fn newest_xochitl_page() -> Option<String> {
+    let root = std::env::var("RIDDLE_XOCHITL_DIR").unwrap_or_else(|_| XOCHITL_DIR.into());
+    let mut newest: Option<(std::time::SystemTime, String)> = None;
+    // Walk <root>/*.thumbnails/*.png, tracking the most recently modified PNG.
+    let entries = std::fs::read_dir(&root).ok()?;
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if !name.ends_with(".thumbnails") {
+            continue;
+        }
+        let Ok(pages) = std::fs::read_dir(e.path()) else { continue };
+        for p in pages.flatten() {
+            if p.path().extension().and_then(|x| x.to_str()) != Some("png") {
+                continue;
+            }
+            let Ok(m) = p.metadata().and_then(|m| m.modified()) else { continue };
+            let path = p.path().to_string_lossy().into_owned();
+            if newest.as_ref().is_none_or(|(t, _)| m > *t) {
+                newest = Some((m, path));
+            }
+        }
+    }
+    let (mtime, path) = newest?;
+    let max_age = std::env::var("RIDDLE_ASK_MAX_AGE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(900u64);
+    if let Ok(age) = std::time::SystemTime::now().duration_since(mtime) {
+        if age.as_secs() > max_age {
+            eprintln!(
+                "riddle: newest xochitl page is {}s old (> {}s); not asking about a stale page",
+                age.as_secs(),
+                max_age
+            );
+            return None;
+        }
+    }
+    eprintln!("riddle: asking about xochitl page {path}");
+    Some(path)
+}

@@ -129,6 +129,21 @@ fn main() {
                 None => 1,
             });
         }
+        // Diagnostic: print the newest stock-notes page render Track B would
+        // ask about (RIDDLE_XOCHITL_DIR / RIDDLE_ASK_MAX_AGE honored), then
+        // exit. Verifies the finder against the real store.
+        Some("--xochitl-page") => {
+            std::process::exit(match ask::newest_xochitl_page() {
+                Some(p) => {
+                    println!("{p}");
+                    0
+                }
+                None => {
+                    eprintln!("no fresh xochitl page found");
+                    1
+                }
+            });
+        }
         Some("--version" | "-V") => {
             println!("riddle {}", env!("CARGO_PKG_VERSION"));
             return;
@@ -313,35 +328,53 @@ fn run() -> std::io::Result<()> {
     // Deliberate send: latched when the user draws the send rule.
     let mut send_now = false;
 
-    // Path B: the launch script may have captured the screen (the stock notes
-    // page you were just writing on) before our window covered it. Ask the
-    // oracle about it right away; the answer writes itself onto the blank
-    // page while you watch. The exchange is remembered like any other turn —
-    // the oracle's transcription postscript covers the captured words; only
-    // the pen strokes are absent (they were penned in xochitl, not here).
-    if let Ok(raw) = std::env::var("RIDDLE_ASK_RAW") {
-        if ask::prepare(&raw, PNG_PATH).is_some() {
-            if let Some(ref o) = oracle {
-                turn_id = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                turn_strokes = Vec::new();
-                turn_reply.clear();
-                turn_transcript = None;
-                turn_failed = false;
-                let ctx = build_ctx(&store);
-                let (tx, rx) = mpsc::channel();
-                o.ask(PNG_PATH, &ctx, tx);
-                eprintln!("riddle: asking about the captured page");
-                state = State::Thinking {
-                    rx,
-                    pulse: Instant::now(),
-                    blot_on: false,
-                    since: Instant::now(),
-                    wrote: BBox::empty(),
-                };
-            }
+    // Reply draw speed: points drawn per animation frame. Higher = the answer
+    // appears faster (fewer seconds of watching it scrawl). Was 26; the e-ink
+    // coalesces the per-frame dirty rect into one update, so larger batches are
+    // nearly free. RIDDLE_REPLY_POINTS overrides.
+    let reply_points: usize = std::env::var("RIDDLE_REPLY_POINTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+
+    // Startup ask — two sources for "what did you write in the stock notes app":
+    //   Track A (RIDDLE_ASK_RAW): a live-screen framebuffer dump the launch
+    //     script captured (parked — capture doesn't work on this OS build).
+    //   Track B (RIDDLE_ASK_XOCHITL): the newest rendered xochitl page PNG —
+    //     you write in stock notes at native latency, close the page, open The
+    //     Diary. This is already a PNG, so it feeds the oracle directly.
+    // Either way the answer writes itself onto the blank page while you watch,
+    // and the exchange flows into the diary's memory like any other turn — the
+    // oracle's transcription postscript covers the words; only the pen strokes
+    // are absent (they were penned in xochitl, not here).
+    let ask_png: Option<String> = if let Ok(raw) = std::env::var("RIDDLE_ASK_RAW") {
+        ask::prepare(&raw, PNG_PATH).map(|_| PNG_PATH.to_string())
+    } else if std::env::var("RIDDLE_ASK_XOCHITL").map(|v| v != "0" && v != "off").unwrap_or(false) {
+        ask::newest_xochitl_page()
+    } else {
+        None
+    };
+    if let Some(png) = ask_png {
+        if let Some(ref o) = oracle {
+            turn_id = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            turn_strokes = Vec::new();
+            turn_reply.clear();
+            turn_transcript = None;
+            turn_failed = false;
+            let ctx = build_ctx(&store);
+            let (tx, rx) = mpsc::channel();
+            o.ask(&png, &ctx, tx);
+            eprintln!("riddle: asking about the captured page");
+            state = State::Thinking {
+                rx,
+                pulse: Instant::now(),
+                blot_on: false,
+                since: Instant::now(),
+                wrote: BBox::empty(),
+            };
         }
     }
 
@@ -699,7 +732,7 @@ fn run() -> std::io::Result<()> {
                 }
                 if Instant::now() >= next {
                     let mut dirty = BBox::empty();
-                    let mut budget = 26;
+                    let mut budget = reply_points;
                     while budget > 0 && plan.stroke_i < plan.strokes.len() {
                         let stroke = &plan.strokes[plan.stroke_i];
                         if plan.point_i >= stroke.len() {
@@ -1015,7 +1048,15 @@ fn plan_reply(font: &FontRef, text: &str, y_start: Option<i32>) -> WritePlan {
         ((seed >> 16) % 7) as i32 - 3
     };
 
+    // Never write past the bottom of the page: stop laying out lines once the
+    // next one wouldn't fit. A reply that would overflow is truncated on the
+    // page rather than spilling off it (the persona keeps replies short, so
+    // this is a guard, not the normal path).
+    let y_limit = SCREEN_H as i32 - line_h;
     for line_text in &lines {
+        if y > y_limit {
+            break;
+        }
         let mut raster = script::rasterize_line(font, line_text, REPLY_PX);
         script::thin(&mut raster);
         let line_strokes = script::trace(&raster);
