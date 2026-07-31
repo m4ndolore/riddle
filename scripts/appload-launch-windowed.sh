@@ -9,16 +9,11 @@ if [ -f "$HERE/oracle.env" ]; then
     set -a; . "$HERE/oracle.env"; set +a
 fi
 
-# Path B: snapshot the screen as it was before our window covers it (the
-# stock notes page you were just writing on) and hand it to riddle, which
-# asks the oracle about it at startup. Set RIDDLE_ASK=off to skip.
-if [ "${RIDDLE_ASK:-on}" != "off" ] && [ -f "$HERE/capture-xochitl.sh" ]; then
-    if sh "$HERE/capture-xochitl.sh" /tmp/xochitl-screen.raw; then
-        export RIDDLE_ASK_RAW=/tmp/xochitl-screen.raw
-    else
-        echo "riddle: screen capture failed; opening a blank diary" >&2
-    fi
-fi
+# Track A (live-screen framebuffer capture) is PARKED: on this OS build the
+# page lives only in xochitl's private Qt buffers (capture-xochitl.sh stays
+# in scripts/ for the record, but isn't bundled). Track B instead: set
+# RIDDLE_ASK_XOCHITL=1 in oracle.env and riddle asks about the newest
+# rendered stock-notes page at startup.
 
 cd "$HERE"
 HOME=/home/root exec "$HERE/riddle"

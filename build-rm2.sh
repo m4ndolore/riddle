@@ -30,8 +30,7 @@ mkdir -p "$DIST"
 
 cp "$OUT/riddle" "$DIST/riddle"
 cp scripts/appload-launch-windowed.sh "$DIST/appload-launch.sh"
-cp scripts/capture-xochitl.sh "$DIST/capture-xochitl.sh"
-chmod +x "$DIST/riddle" "$DIST/appload-launch.sh" "$DIST/capture-xochitl.sh"
+chmod +x "$DIST/riddle" "$DIST/appload-launch.sh"
 cp icon.png oracle.env.example "$DIST/"
 cat > "$DIST/external.manifest.json" <<'EOF'
 {

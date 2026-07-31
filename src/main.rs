@@ -347,13 +347,17 @@ fn run() -> std::io::Result<()> {
     // and the exchange flows into the diary's memory like any other turn — the
     // oracle's transcription postscript covers the words; only the pen strokes
     // are absent (they were penned in xochitl, not here).
-    let ask_png: Option<String> = if let Ok(raw) = std::env::var("RIDDLE_ASK_RAW") {
-        ask::prepare(&raw, PNG_PATH).map(|_| PNG_PATH.to_string())
-    } else if std::env::var("RIDDLE_ASK_XOCHITL").map(|v| v != "0" && v != "off").unwrap_or(false) {
-        ask::newest_xochitl_page()
-    } else {
-        None
-    };
+    let ask_png: Option<String> = std::env::var("RIDDLE_ASK_RAW")
+        .ok()
+        .and_then(|raw| ask::prepare(&raw, PNG_PATH).map(|_| PNG_PATH.to_string()))
+        .or_else(|| {
+            // A failed/absent capture falls through to Track B, never blocks it.
+            std::env::var("RIDDLE_ASK_XOCHITL")
+                .map(|v| v != "0" && v != "off")
+                .unwrap_or(false)
+                .then(ask::newest_xochitl_page)
+                .flatten()
+        });
     if let Some(png) = ask_png {
         if let Some(ref o) = oracle {
             turn_id = std::time::SystemTime::now()
