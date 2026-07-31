@@ -10,6 +10,7 @@
 #[cfg(all(feature = "rm2", feature = "takeover"))]
 compile_error!("takeover mode drives the Paper Pro's vendor engine; build rm2 without --features takeover");
 
+mod ask;
 mod display;
 mod evdev;
 mod fb;
@@ -114,6 +115,19 @@ fn main() {
         Some("--oracle-test") => {
             let png = args.get(2).map(String::as_str).unwrap_or(PNG_PATH);
             std::process::exit(oracle_test(png));
+        }
+        // Diagnostic: run the Path B raw->PNG conversion alone (consuming the
+        // raw, like startup does) so a fresh capture can be checked without
+        // launching the diary. No display needed.
+        Some("--ask-test") => {
+            let raw = args.get(2).map(String::as_str).unwrap_or("/tmp/xochitl-screen.raw");
+            std::process::exit(match ask::prepare(raw, "/tmp/riddle-ask.png") {
+                Some(()) => {
+                    println!("ok: /tmp/riddle-ask.png");
+                    0
+                }
+                None => 1,
+            });
         }
         Some("--version" | "-V") => {
             println!("riddle {}", env!("CARGO_PKG_VERSION"));
@@ -298,6 +312,38 @@ fn run() -> std::io::Result<()> {
         .unwrap_or(4);
     // Deliberate send: latched when the user draws the send rule.
     let mut send_now = false;
+
+    // Path B: the launch script may have captured the screen (the stock notes
+    // page you were just writing on) before our window covered it. Ask the
+    // oracle about it right away; the answer writes itself onto the blank
+    // page while you watch. The exchange is remembered like any other turn —
+    // the oracle's transcription postscript covers the captured words; only
+    // the pen strokes are absent (they were penned in xochitl, not here).
+    if let Ok(raw) = std::env::var("RIDDLE_ASK_RAW") {
+        if ask::prepare(&raw, PNG_PATH).is_some() {
+            if let Some(ref o) = oracle {
+                turn_id = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                turn_strokes = Vec::new();
+                turn_reply.clear();
+                turn_transcript = None;
+                turn_failed = false;
+                let ctx = build_ctx(&store);
+                let (tx, rx) = mpsc::channel();
+                o.ask(PNG_PATH, &ctx, tx);
+                eprintln!("riddle: asking about the captured page");
+                state = State::Thinking {
+                    rx,
+                    pulse: Instant::now(),
+                    blot_on: false,
+                    since: Instant::now(),
+                    wrote: BBox::empty(),
+                };
+            }
+        }
+    }
 
     eprintln!("riddle: the diary is open");
 
