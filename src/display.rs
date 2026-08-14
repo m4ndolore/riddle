@@ -16,6 +16,9 @@ pub enum Display {
     Qtfb(crate::qtfb::QtfbClient),
     #[allow(dead_code)]
     Quill,
+    /// rM2 takeover: xochitl stopped, panel via the rm2display server.
+    #[cfg(feature = "rm2")]
+    Rm2fb(crate::rm2fb::Rm2fbClient),
 }
 
 // C ABI from libquill.so (linked when built with --features takeover).
@@ -48,6 +51,25 @@ impl Display {
             let (ptr, len) = (buf.as_mut_ptr(), buf.len());
             let surface = Surface::new(ptr, len, SCREEN_W, SCREEN_H, SCREEN_W * 2, PixFmt::Rgb565);
             return Ok((Display::Qtfb(client), surface));
+        }
+
+        // rM2 with no QTFB_KEY: takeover via the rm2fb protocol. The launch
+        // script is responsible for xochitl being stopped and the rm2display
+        // server running; if the server socket isn't there, updates go
+        // nowhere and open() still succeeds — so probe the shm dir instead.
+        #[cfg(feature = "rm2")]
+        {
+            let client = crate::rm2fb::Rm2fbClient::open()?;
+            let (ptr, len) = client.framebuffer();
+            let surface = Surface::new(
+                ptr,
+                len,
+                crate::rm2fb::FB_W,
+                crate::rm2fb::FB_H,
+                crate::rm2fb::FB_W * 2,
+                PixFmt::Rgb565,
+            );
+            return Ok((Display::Rm2fb(client), surface));
         }
 
         #[cfg(feature = "takeover")]
@@ -88,6 +110,11 @@ impl Display {
                     quill_ffi::quill_process_events();
                 }
             }
+            #[cfg(feature = "rm2")]
+            Display::Rm2fb(c) => {
+                let wave = if _fast { crate::rm2fb::WAVE_DU } else { crate::rm2fb::WAVE_GC16 };
+                c.update(x, y, w, h, wave);
+            }
         }
     }
 
@@ -104,6 +131,8 @@ impl Display {
                     quill_ffi::quill_process_events();
                 }
             }
+            #[cfg(feature = "rm2")]
+            Display::Rm2fb(c) => c.update(0, 0, w as i32, h as i32, crate::rm2fb::WAVE_GC16),
         }
         let _ = (w, h);
     }
@@ -122,6 +151,8 @@ impl Display {
                     quill_ffi::quill_process_events();
                 }
             }
+            #[cfg(feature = "rm2")]
+            Display::Rm2fb(c) => c.update(0, 0, w as i32, h as i32, crate::rm2fb::WAVE_GC16),
         }
         let _ = (w, h);
     }
@@ -138,6 +169,8 @@ impl Display {
                 }
                 Ok(Vec::new())
             }
+            #[cfg(feature = "rm2")]
+            Display::Rm2fb(_) => Ok(Vec::new()),
         }
     }
 

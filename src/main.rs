@@ -21,6 +21,7 @@ mod oracle;
 mod pen;
 mod power;
 mod qtfb;
+mod rm2fb;
 mod script;
 mod surface;
 mod touch;
@@ -86,6 +87,12 @@ enum State {
     /// The conjured memory rests on the page. Pen contact (or time) dissolves
     /// it and today's page returns. `saved: None` = dismissed, waiting pen-up.
     MemoryShown { saved: Option<Vec<u8>>, until: Instant, region: BBox },
+}
+
+#[derive(Clone, Copy)]
+enum CommitMode {
+    Capture,
+    Ask,
 }
 
 /// A memory being rewritten onto the page: pre-positioned strokes with their
@@ -238,7 +245,9 @@ fn run() -> std::io::Result<()> {
     let font = FontRef::try_from_slice(font_bytes).map_err(std::io::Error::other)?;
 
     let (disp, mut surf) = display::Display::open()?;
-    let takeover = matches!(disp, display::Display::Quill);
+    // Anything that isn't the qtfb window owns the panel, the raw touch
+    // devices, and the power button — quill on the Paper Pro, rm2fb here.
+    let takeover = !matches!(disp, display::Display::Qtfb(_));
     eprintln!(
         "riddle: display {} ({}x{} stride {})",
         if takeover { "quill/takeover" } else { "qtfb" },
@@ -326,7 +335,7 @@ fn run() -> std::io::Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(4);
     // Deliberate send: latched when the user draws the send rule.
-    let mut send_now = false;
+    let mut send_mode: Option<CommitMode> = None;
 
     // Reply draw speed: points drawn per animation frame. Higher = the answer
     // appears faster (fewer seconds of watching it scrawl). Was 26; the e-ink
@@ -457,8 +466,8 @@ fn run() -> std::io::Result<()> {
                         user_ink.pen_up();
                         if let State::Listening { ref mut last_pen } = state {
                             *last_pen = Some(Instant::now());
-                            if absorb_send_rule(&mut user_ink, &mut surf, &disp) {
-                                send_now = true;
+                            if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
+                                send_mode = Some(mode);
                             }
                         }
                     }
@@ -521,8 +530,8 @@ fn run() -> std::io::Result<()> {
                         user_ink.pen_up();
                         if let State::Listening { ref mut last_pen } = state {
                             *last_pen = Some(Instant::now());
-                            if absorb_send_rule(&mut user_ink, &mut surf, &disp) {
-                                send_now = true;
+                            if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
+                                send_mode = Some(mode);
                             }
                         }
                     }
@@ -544,11 +553,11 @@ fn run() -> std::io::Result<()> {
             State::Listening { last_pen } => match last_pen {
                 Some(t)
                     if !pen_down
-                        && (send_now
+                        && (send_mode.is_some()
                             || (!idle_commit.is_zero() && t.elapsed() >= idle_commit))
                         && !user_ink.is_empty() =>
                 {
-                    send_now = false;
+                    let commit_mode = send_mode.take().unwrap_or(CommitMode::Capture);
                     if region_all_white(&surf, user_ink.bbox) {
                         // Everything was erased before the pause: nothing to
                         // commit (and no phantom "?" from erased strokes).
@@ -589,7 +598,11 @@ fn run() -> std::io::Result<()> {
                         // ink, hiding most of the reply latency in the animation.
                         let (tx, rx) = mpsc::channel();
                         if let Some(ref o) = oracle {
-                            o.ask(PNG_PATH, &build_ctx(&store), tx);
+                            let ask_model = match commit_mode {
+                                CommitMode::Ask => std::env::var("RIDDLE_OPENAI_ASK_MODEL").ok(),
+                                CommitMode::Capture => None,
+                            };
+                            o.ask_with_model(PNG_PATH, &build_ctx(&store), tx, ask_model.as_deref());
                         }
                         // Both backends read the page before ask() returns; the
                         // writer's words don't need to sit on disk afterwards.
@@ -906,10 +919,10 @@ fn run() -> std::io::Result<()> {
 /// page and drop it from the ink — and report that the user asked to send.
 /// The rule must span ~60% of the width of what's written (short note, short
 /// rule), with an absolute floor so a stray dash under one word doesn't send.
-fn absorb_send_rule(ink: &mut ink::Ink, surf: &mut Surface, disp: &display::Display) -> bool {
+fn absorb_send_rule(ink: &mut ink::Ink, surf: &mut Surface, disp: &display::Display) -> Option<CommitMode> {
     let strokes = ink.stroke_list();
     if strokes.len() < 2 {
-        return false;
+        return None;
     }
     let mut text = BBox::empty();
     for s in &strokes[..strokes.len() - 1] {
@@ -919,18 +932,26 @@ fn absorb_send_rule(ink: &mut ink::Ink, surf: &mut Surface, disp: &display::Disp
     }
     let text_w = (text.x1 - text.x0).max(0);
     let min_w = (text_w * 3 / 5).max(SCREEN_W as i32 * 3 / 20);
-    let is_rule = strokes.last().is_some_and(|s| help::looks_like_send_rule(s, min_w));
-    if !is_rule {
-        return false;
+    let mode = strokes.last().and_then(|stroke| {
+        if help::looks_like_ask_arrow(stroke, min_w) {
+            Some(CommitMode::Ask)
+        } else if help::looks_like_send_rule(stroke, min_w) {
+            Some(CommitMode::Capture)
+        } else {
+            None
+        }
+    });
+    if mode.is_none() {
+        return None;
     }
     if let Some(gone) = ink.pop_stroke() {
         let (x, y, w, h) = gone.rect();
         surf.fill_rect(x.max(0) as usize, y.max(0) as usize, w as usize, h as usize, WHITE);
         disp.update(x, y, w, h, true);
-        eprintln!("riddle: send rule drawn");
-        return true;
+        eprintln!("riddle: {} gesture drawn", if matches!(mode, Some(CommitMode::Ask)) { "ask" } else { "capture" });
+        return mode;
     }
-    false
+    None
 }
 
 /// True if the region no longer holds any dark pixels (fully erased).
