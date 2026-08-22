@@ -2,6 +2,7 @@
 /dist/
 /quill/build/
 /quill/vendor/
+/.sdk/
 *.log
 
 # Never commit a real API key.

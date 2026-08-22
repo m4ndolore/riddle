@@ -5,10 +5,11 @@ fn main() {
         println!("cargo:rerun-if-env-changed=RIDDLE_SDK_SYSROOT_LIB");
 
         let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-        let quill_build =
-            std::env::var("QUILL_BUILD_DIR").unwrap_or_else(|_| format!("{manifest}/quill/build"));
+        let target = std::env::var("TARGET").unwrap();
+        let quill_build = std::env::var("QUILL_BUILD_DIR")
+            .unwrap_or_else(|_| format!("{manifest}/quill/build/{target}"));
         let quill_vendor = std::env::var("QUILL_VENDOR_DIR")
-            .unwrap_or_else(|_| format!("{manifest}/quill/vendor"));
+            .unwrap_or_else(|_| format!("{manifest}/quill/vendor/{target}"));
         println!("cargo:rustc-link-search=native={quill_build}");
         println!("cargo:rustc-link-search=native={quill_vendor}");
         println!("cargo:rustc-link-lib=dylib=quill");

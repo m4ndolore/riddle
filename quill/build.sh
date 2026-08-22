@@ -41,6 +41,16 @@ if [ ! -f "$VENDOR/libqsgepaper.so" ]; then
   scp -O "$DEVICE_HOST:/usr/lib/plugins/scenegraph/libqsgepaper.so" "$VENDOR/"
 fi
 
+LIB_DESC=$(file -b "$VENDOR/libqsgepaper.so")
+case "$DEVICE:$LIB_DESC" in
+  rm2:*"ELF 32-bit"*"ARM"*) ;;
+  rmpp:*"ELF 64-bit"*"aarch64"*) ;;
+  *)
+    echo "wrong libqsgepaper.so architecture for $DEVICE: $LIB_DESC" >&2
+    exit 1
+    ;;
+esac
+
 QTINC="$SDKTARGETSYSROOT/usr/include"
 $CXX -fPIC -shared -O2 -std=c++17 \
   -I "$QTINC" -I "$QTINC/QtCore" -I "$QTINC/QtGui" \
