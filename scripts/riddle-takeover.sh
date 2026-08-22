@@ -6,8 +6,7 @@
 # anything wedges: ssh rm 'systemctl start xochitl'.
 
 restore() {
-    rm -f /tmp/epframebuffer.lock
-    systemctl start xochitl
+    "$HERE/riddle-restore.sh"
 }
 # Under the Remagic Home session host (REMAGIC_SESSION=1), xochitl is already
 # stopped and the session owns its restore — skip our own stop/restart.
@@ -29,6 +28,9 @@ if [ -f "$HERE/oracle.env" ]; then
 fi
 
 if [ -z "${REMAGIC_SESSION:-}" ]; then
+    # xochitl normally holds this. Without a replacement, kernel autosleep can
+    # resume into a second display engine while Riddle still owns the panel.
+    echo riddle-takeover > /sys/power/wake_lock 2>/dev/null || true
     systemctl stop xochitl
 fi
 rm -f /tmp/epframebuffer.lock      # stale EPD lock blocks the engine

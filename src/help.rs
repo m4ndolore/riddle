@@ -26,6 +26,27 @@ pub fn looks_like_send_rule(stroke: &[(i32, i32, i32)], min_w: i32) -> bool {
     w >= min_w && h <= 110 && w >= h * 4
 }
 
+/// An underline finished as a right-pointing arrow selects the alternate
+/// oracle model (Vellum Ask). The shaft still has to meet the deliberate-send
+/// width; the final quarter must double back and deviate vertically.
+pub fn looks_like_ask_arrow(stroke: &[(i32, i32, i32)], min_w: i32) -> bool {
+    if !looks_like_send_rule(stroke, min_w) || stroke.len() < 16 {
+        return false;
+    }
+    let x0 = stroke.iter().map(|p| p.0).min().unwrap_or(0);
+    let x1 = stroke.iter().map(|p| p.0).max().unwrap_or(0);
+    let width = x1 - x0;
+    let tip_i = stroke.iter().enumerate().max_by_key(|(_, p)| p.0).map(|(i, _)| i).unwrap_or(0);
+    let tail = &stroke[tip_i..];
+    if tail.len() < 4 || tip_i < stroke.len() / 2 {
+        return false;
+    }
+    let tip_y = stroke[tip_i].1;
+    let doubled_back = tail.iter().any(|p| p.0 < x1 - width / 12);
+    let vertical_head = tail.iter().any(|p| (p.1 - tip_y).abs() > 28);
+    doubled_back && vertical_head
+}
+
 /// Does the committed ink look like a single big "?" (with or without its
 /// dot)? Deliberately forgiving: a false positive only shows the guide.
 pub fn looks_like_question_mark(strokes: &[Vec<(i32, i32, i32)>]) -> bool {
@@ -284,6 +305,16 @@ mod tests {
         assert!(looks_like_question_mark(&question_mark(1.5, false, false)));
         assert!(looks_like_question_mark(&question_mark(1.5, true, true)));
         assert!(looks_like_question_mark(&question_mark(3.0, true, false)));
+    }
+
+    #[test]
+    fn distinguishes_capture_rule_from_ask_arrow() {
+        let rule: Vec<(i32, i32, i32)> = (0..=40).map(|i| (100 + i * 10, 300, 3)).collect();
+        let mut arrow = rule.clone();
+        arrow.extend((1..=8).map(|i| (500 - i * 8, 300 - i * 6, 3)));
+        assert!(looks_like_send_rule(&rule, 300));
+        assert!(!looks_like_ask_arrow(&rule, 300));
+        assert!(looks_like_ask_arrow(&arrow, 300));
     }
 
     #[test]

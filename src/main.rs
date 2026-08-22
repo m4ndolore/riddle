@@ -7,9 +7,6 @@
 //! QTFB_KEY is set, or full takeover via the vendor engine (quill) when
 //! built with --features takeover and launched with xochitl stopped.
 
-#[cfg(all(feature = "rm2", feature = "takeover"))]
-compile_error!("takeover mode drives the Paper Pro's vendor engine; build rm2 without --features takeover");
-
 mod ask;
 mod display;
 mod evdev;
@@ -21,6 +18,7 @@ mod oracle;
 mod pen;
 mod power;
 mod qtfb;
+#[cfg(all(feature = "rm2", not(feature = "takeover")))]
 mod rm2fb;
 mod script;
 mod surface;
@@ -245,8 +243,8 @@ fn run() -> std::io::Result<()> {
     let font = FontRef::try_from_slice(font_bytes).map_err(std::io::Error::other)?;
 
     let (disp, mut surf) = display::Display::open()?;
-    // Anything that isn't the qtfb window owns the panel, the raw touch
-    // devices, and the power button — quill on the Paper Pro, rm2fb here.
+    // Anything that isn't the qtfb window owns the panel, raw input devices,
+    // and power button: Quill on either tablet, or the legacy rm2fb fallback.
     let takeover = !matches!(disp, display::Display::Qtfb(_));
     eprintln!(
         "riddle: display {} ({}x{} stride {})",

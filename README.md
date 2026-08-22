@@ -203,10 +203,7 @@ vendor Qt libs need its glibc, **and** `libqsgepaper.so` pulled from *your own
 device* (it is proprietary and not distributed here):
 
 ```sh
-# Keep the quill and riddle repositories beside each other.
-cd quill && ./build.sh              # pulls libqsgepaper.so from the device over
-                                    # ssh, builds libquill.so + the demos
-cd ../riddle && ./build-takeover.sh
+./build-takeover.sh                 # builds the vendored clean-room Quill core
 ./scripts/make-bundle.sh            # stages the AppLoad bundle in dist/riddle/
 ```
 
@@ -221,7 +218,7 @@ diary without leaving it. The unit's stop hook restarts xochitl even if
 riddle dies uncleanly. If anything wedges:
 `ssh root@10.11.99.1 'systemctl start xochitl'`.
 
-### reMarkable 2 (windowed only)
+### reMarkable 2
 
 The rM2 needs **no developer mode** — SSH is built in (password under
 Settings → Help → Copyrights → GPLv3 Compliance). One command installs
@@ -234,11 +231,25 @@ rustup target add armv7-unknown-linux-musleabihf   # once; needs zig + cargo-zig
 ```
 
 Full walkthrough, manual steps, and troubleshooting:
-**[docs/rm2-setup.md](docs/rm2-setup.md)**. The rM2 runs in windowed
-(AppLoad/qtfb) mode only — the takeover engine is Paper Pro-specific, so
-your own ink echoes with visible latency (tunable via `RIDDLE_FLUSH_MS`
-and `RIDDLE_IDLE_MS` in `oracle.env`, but the compositor pipeline sets a
-floor). Treat it as a delightful demo, not a notes replacement.
+**[docs/rm2-setup.md](docs/rm2-setup.md)**. This windowed AppLoad/qtfb path is
+the easiest installation and keeps xochitl running, but its compositor adds
+visible pen latency and does not expose per-update waveform control.
+
+The experimental takeover build removes that compositor. It builds the
+vendored MIT Quill adapter against the ARMv7 Qt ABI and the tablet's own
+`libqsgepaper.so`:
+
+```sh
+rustup target add armv7-unknown-linux-gnueabihf
+DEVICE=rm2 SDK="$HOME/rm-sdk-rm2" ./build-takeover.sh
+DEVICE=rm2 ./scripts/make-bundle.sh
+scp -O -r dist/rm2-takeover/riddle root@10.11.99.1:/home/root/xovi/exthome/appload/riddle-takeover
+```
+
+Keep SSH open for the first device run. The launcher holds the kernel wake
+lock while xochitl is stopped and its systemd crash hook restores the stock UI
+even if Riddle is killed. The older `rm2fb_server` implementation remains in
+the source tree as a fallback, but it is no longer the normal takeover path.
 
 ## What leaves the device
 

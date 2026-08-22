@@ -13,7 +13,7 @@ systemctl is-active --quiet riddle-takeover && exit 0
 # "-" ignores failures.) Fall back to a plain launch if the property is
 # rejected by an older systemd.
 systemd-run --unit=riddle-takeover --collect \
-    --property="ExecStopPost=-/bin/systemctl start xochitl" \
+    --property="ExecStopPost=-$HERE/riddle-restore.sh" \
     /bin/bash "$HERE/riddle-takeover.sh" \
   || systemd-run --unit=riddle-takeover --collect /bin/bash "$HERE/riddle-takeover.sh"
 exit 0

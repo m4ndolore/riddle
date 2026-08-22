@@ -1,5 +1,10 @@
 # riddle on the reMarkable 2 — setup from zero
 
+This guide installs the stable windowed AppLoad build. An experimental direct
+Quill takeover build is also available; see the reMarkable 2 section of the
+main README. It removes the qtfb latency floor but should first be launched
+with SSH available as a recovery path.
+
 The rM2 needs no "developer mode": SSH as root is built into every unit.
 You need: the tablet, its USB-C cable, and ~15 minutes.
 

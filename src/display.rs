@@ -16,8 +16,8 @@ pub enum Display {
     Qtfb(crate::qtfb::QtfbClient),
     #[allow(dead_code)]
     Quill,
-    /// rM2 takeover: xochitl stopped, panel via the rm2display server.
-    #[cfg(feature = "rm2")]
+    /// Legacy rM2 takeover fallback via the firmware-specific rm2display server.
+    #[cfg(all(feature = "rm2", not(feature = "takeover")))]
     Rm2fb(crate::rm2fb::Rm2fbClient),
 }
 
@@ -30,7 +30,7 @@ mod quill_ffi {
         pub fn quill_height() -> i32;
         pub fn quill_stride() -> i32;
         pub fn quill_buffer() -> *mut u8;
-        pub fn quill_swap(x: i32, y: i32, w: i32, h: i32, mode: i32, full: i32) -> u64;
+        pub fn quill_swap(x: i32, y: i32, w: i32, h: i32, mode: i32, full: i32) -> libc::c_ulong;
         pub fn quill_process_events();
     }
 }
@@ -39,13 +39,8 @@ impl Display {
     pub fn open() -> io::Result<(Self, Surface)> {
         if let Ok(key) = std::env::var("QTFB_KEY") {
             let key: i32 = key.parse().map_err(io::Error::other)?;
-            let mut client = crate::qtfb::QtfbClient::connect(
-                key,
-                QTFB_FORMAT,
-                SCREEN_W,
-                SCREEN_H,
-                2,
-            )?;
+            let mut client =
+                crate::qtfb::QtfbClient::connect(key, QTFB_FORMAT, SCREEN_W, SCREEN_H, 2)?;
             let _ = client.set_refresh_mode(crate::qtfb::REFRESH_MODE_UFAST);
             let buf = client.framebuffer();
             let (ptr, len) = (buf.as_mut_ptr(), buf.len());
@@ -53,30 +48,14 @@ impl Display {
             return Ok((Display::Qtfb(client), surface));
         }
 
-        // rM2 with no QTFB_KEY: takeover via the rm2fb protocol. The launch
-        // script is responsible for xochitl being stopped and the rm2display
-        // server running; if the server socket isn't there, updates go
-        // nowhere and open() still succeeds — so probe the shm dir instead.
-        #[cfg(feature = "rm2")]
-        {
-            let client = crate::rm2fb::Rm2fbClient::open()?;
-            let (ptr, len) = client.framebuffer();
-            let surface = Surface::new(
-                ptr,
-                len,
-                crate::rm2fb::FB_W,
-                crate::rm2fb::FB_H,
-                crate::rm2fb::FB_W * 2,
-                PixFmt::Rgb565,
-            );
-            return Ok((Display::Rm2fb(client), surface));
-        }
-
+        // A takeover build always prefers Quill. The legacy rm2fb backend is
+        // retained only for an rm2 build that does not link Quill.
         #[cfg(feature = "takeover")]
         {
             unsafe {
-                if quill_ffi::quill_init() != 0 {
-                    return Err(io::Error::other("quill_init failed"));
+                let result = quill_ffi::quill_init();
+                if result != 0 {
+                    return Err(io::Error::other(format!("quill_init failed ({result})")));
                 }
                 let w = quill_ffi::quill_width() as usize;
                 let h = quill_ffi::quill_height() as usize;
@@ -89,7 +68,23 @@ impl Display {
                 Ok((Display::Quill, surface))
             }
         }
-        #[cfg(not(feature = "takeover"))]
+
+        #[cfg(all(feature = "rm2", not(feature = "takeover")))]
+        {
+            let client = crate::rm2fb::Rm2fbClient::open()?;
+            let (ptr, len) = client.framebuffer();
+            let surface = Surface::new(
+                ptr,
+                len,
+                crate::rm2fb::FB_W,
+                crate::rm2fb::FB_H,
+                crate::rm2fb::FB_W * 2,
+                PixFmt::Rgb565,
+            );
+            Ok((Display::Rm2fb(client), surface))
+        }
+
+        #[cfg(all(not(feature = "takeover"), not(feature = "rm2")))]
         Err(io::Error::other(
             "QTFB_KEY not set and this build has no takeover backend",
         ))
@@ -110,9 +105,13 @@ impl Display {
                     quill_ffi::quill_process_events();
                 }
             }
-            #[cfg(feature = "rm2")]
+            #[cfg(all(feature = "rm2", not(feature = "takeover")))]
             Display::Rm2fb(c) => {
-                let wave = if _fast { crate::rm2fb::WAVE_DU } else { crate::rm2fb::WAVE_GC16 };
+                let wave = if _fast {
+                    crate::rm2fb::WAVE_DU
+                } else {
+                    crate::rm2fb::WAVE_GC16
+                };
                 c.update(x, y, w, h, wave);
             }
         }
@@ -131,7 +130,7 @@ impl Display {
                     quill_ffi::quill_process_events();
                 }
             }
-            #[cfg(feature = "rm2")]
+            #[cfg(all(feature = "rm2", not(feature = "takeover")))]
             Display::Rm2fb(c) => c.update(0, 0, w as i32, h as i32, crate::rm2fb::WAVE_GC16),
         }
         let _ = (w, h);
@@ -151,7 +150,7 @@ impl Display {
                     quill_ffi::quill_process_events();
                 }
             }
-            #[cfg(feature = "rm2")]
+            #[cfg(all(feature = "rm2", not(feature = "takeover")))]
             Display::Rm2fb(c) => c.update(0, 0, w as i32, h as i32, crate::rm2fb::WAVE_GC16),
         }
         let _ = (w, h);
@@ -169,7 +168,7 @@ impl Display {
                 }
                 Ok(Vec::new())
             }
-            #[cfg(feature = "rm2")]
+            #[cfg(all(feature = "rm2", not(feature = "takeover")))]
             Display::Rm2fb(_) => Ok(Vec::new()),
         }
     }
@@ -178,5 +177,18 @@ impl Display {
         if let Display::Qtfb(c) = self {
             c.terminate();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn vendored_quill_covers_both_qt_stride_abis() {
+        let probe = include_str!("../quill/src/vendor_probe.cpp");
+        assert!(probe.contains("_ZN6QImageC1EPhiixNS_6FormatEPFvPvES2_"));
+        assert!(probe.contains("_ZN6QImageC2EPhiixNS_6FormatEPFvPvES2_"));
+        assert!(probe.contains("_ZN6QImageC1EPhiiiNS_6FormatEPFvPvES2_"));
+        assert!(probe.contains("_ZN6QImageC2EPhiiiNS_6FormatEPFvPvES2_"));
+        assert!(probe.contains("qsizetype stride"));
     }
 }

@@ -18,7 +18,8 @@ ureq = { version = "2.10", default-features = false, features = ["tls"] }
 # Link libquill.so (vendor e-ink engine C ABI) for full-takeover mode.
 takeover = []
 # Target the reMarkable 2 (1404x1872, rotated wacom digitizer, 32-bit ARM).
-# Windowed (qtfb/AppLoad) only — takeover is Paper Pro-specific.
+# Combine with `takeover` for the ARMv7 clean-room Quill backend; without it,
+# the build uses AppLoad/qtfb and retains the experimental rm2fb fallback.
 rm2 = []
 
 [profile.release]

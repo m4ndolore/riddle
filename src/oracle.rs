@@ -206,8 +206,14 @@ impl Oracle {
     /// Send a handwriting turn; reply events stream on `tx`, which is dropped
     /// when the reply is complete.
     pub fn ask(&self, png_path: &str, ctx: &TurnContext, tx: Sender<Result<Event, String>>) {
+        self.ask_with_model(png_path, ctx, tx, None);
+    }
+
+    /// Send a turn with an optional HTTP model override. Pi has no model-per-
+    /// turn transport, so it retains its configured model.
+    pub fn ask_with_model(&self, png_path: &str, ctx: &TurnContext, tx: Sender<Result<Event, String>>, model: Option<&str>) {
         match self {
-            Oracle::Http(o) => o.ask(png_path, ctx, tx),
+            Oracle::Http(o) => o.ask_with_model(png_path, ctx, tx, model),
             Oracle::Pi(o) => o.ask(png_path, ctx, tx),
         }
     }
@@ -441,7 +447,7 @@ impl HttpOracle {
         Ok(Self { base, key, model, max_tokens, reasoning, remember })
     }
 
-    pub fn ask(&self, png_path: &str, ctx: &TurnContext, tx: Sender<Result<Event, String>>) {
+    pub fn ask_with_model(&self, png_path: &str, ctx: &TurnContext, tx: Sender<Result<Event, String>>, model_override: Option<&str>) {
         let img = match std::fs::read(png_path) {
             Ok(b) => base64(&b),
             Err(e) => {
@@ -449,7 +455,11 @@ impl HttpOracle {
                 return;
             }
         };
-        let (base, key, model) = (self.base.clone(), self.key.clone(), self.model.clone());
+        let (base, key, model) = (
+            self.base.clone(),
+            self.key.clone(),
+            model_override.unwrap_or(&self.model).to_string(),
+        );
         let max_tokens = self.max_tokens;
         let reasoning_field = self
             .reasoning
