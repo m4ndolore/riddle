@@ -1,23 +1,25 @@
 //! Raw multitouch gestures for takeover mode.
-//! One-finger swipe pages, two-finger drag scrolls, two-finger tap undoes,
-//! three-finger tap redoes, and five fingers exits.
+//! Drawer-aware touch routing plus the deliberate five-finger exit.
 
 use std::io;
 use std::os::fd::RawFd;
 
-use crate::evdev;
+use crate::{evdev, fb};
 
 const EV_SYN: u16 = 0;
 const SYN_REPORT: u16 = 0;
 const EV_ABS: u16 = 3;
 const ABS_MT_SLOT: u16 = 47;
+const ABS_MT_POSITION_X: u16 = 53;
 const ABS_MT_POSITION_Y: u16 = 54;
 const ABS_MT_TRACKING_ID: u16 = 57;
 const EVIOCGRAB: libc::c_ulong = 0x40044590;
 const MAX_SLOTS: usize = 16;
-const SCREEN_H: i32 = 2160;
+const TOUCH_MAX_X: i32 = 2064;
 const TOUCH_MAX_Y: i32 = 2832;
 const TAP_SLOP: i32 = 45;
+const EDGE_PX: i32 = 72;
+const SWIPE_PX: i32 = 120;
 // Require a deliberate hold before five-finger exit.  A single frame can be
 // produced by a writing-hand/palm contact on the reMarkable touch sensor.
 const FIVE_FINGER_HOLD_FRAMES: usize = 20;
@@ -31,12 +33,22 @@ pub enum Gesture {
     Scroll(i32),
     /// Direction (+1 down, -1 up); caller chooses page size.
     Page(i32),
+    /// A rightward swipe beginning in the reserved left-edge zone.
+    OpenDrawer,
+    /// A leftward horizontal swipe. Only closes an already-open overlay.
+    CloseDrawer,
+    /// A downward swipe beginning at the top edge reveals Guided controls.
+    OpenControls,
+    /// Screen-space one-finger tap for fixed UI hit regions.
+    Tap(i32, i32),
 }
 
 #[derive(Clone, Copy, Default)]
 struct Slot {
     active: bool,
+    start_x: i32,
     start_y: i32,
+    x: i32,
     y: i32,
 }
 
@@ -45,6 +57,7 @@ pub struct TouchDevice {
     slots: [Slot; MAX_SLOTS],
     cur: usize,
     max_fingers: usize,
+    frame_x: Option<i32>,
     frame_y: Option<i32>,
     total_motion: i32,
     five_finger_hold_frames: usize,
@@ -70,6 +83,7 @@ impl TouchDevice {
                         slots: [Slot::default(); MAX_SLOTS],
                         cur: 0,
                         max_fingers: 0,
+                        frame_x: None,
                         frame_y: None,
                         total_motion: 0,
                         five_finger_hold_frames: 0,
@@ -86,6 +100,7 @@ impl TouchDevice {
         let _ = self.drain();
         self.slots = [Slot::default(); MAX_SLOTS];
         self.max_fingers = 0;
+        self.frame_x = None;
         self.frame_y = None;
         self.total_motion = 0;
         self.five_finger_hold_frames = 0;
@@ -114,11 +129,18 @@ impl TouchDevice {
                     if self.slots[self.cur].active && self.slots[self.cur].start_y == i32::MIN {
                         self.slots[self.cur].start_y = value;
                     }
+                } else if etype == EV_ABS && code == ABS_MT_POSITION_X {
+                    self.slots[self.cur].x = value;
+                    if self.slots[self.cur].active && self.slots[self.cur].start_x == i32::MIN {
+                        self.slots[self.cur].start_x = value;
+                    }
                 } else if etype == EV_ABS && code == ABS_MT_TRACKING_ID {
                     if value != -1 {
                         self.slots[self.cur] = Slot {
                             active: true,
+                            start_x: i32::MIN,
                             start_y: i32::MIN,
+                            x: self.slots[self.cur].x,
                             y: self.slots[self.cur].y,
                         };
                     } else {
@@ -140,18 +162,23 @@ impl TouchDevice {
             self.five_finger_hold_frames = self.five_finger_hold_frames.saturating_add(1);
         }
 
+        let average_x = (count > 0).then(|| active.iter().map(|s| s.x).sum::<i32>() / count as i32);
         let average_y = (count > 0).then(|| active.iter().map(|s| s.y).sum::<i32>() / count as i32);
+        if let (Some(previous), Some(current)) = (self.frame_x, average_x) {
+            self.total_motion += (previous - current).abs();
+        }
         if let (Some(previous), Some(current)) = (self.frame_y, average_y) {
             let raw_delta = previous - current;
             self.total_motion += raw_delta.abs();
             if count == 2 {
-                let pixels = raw_delta * SCREEN_H / TOUCH_MAX_Y;
+                let pixels = raw_delta * fb::SCREEN_H as i32 / TOUCH_MAX_Y;
                 if pixels != 0 {
                     out.push(Gesture::Scroll(pixels));
                 }
             }
         }
         self.frame_y = average_y;
+        self.frame_x = average_x;
 
         if count == 0 && self.max_fingers > 0 {
             if five_finger_release_is_quit(
@@ -164,6 +191,11 @@ impl TouchDevice {
                 match self.max_fingers {
                     2 => out.push(Gesture::Undo),
                     3 => out.push(Gesture::Redo),
+                    1 => {
+                        if let Some(slot) = self.slots.iter().find(|s| s.start_y != i32::MIN && s.start_x != i32::MIN) {
+                            out.push(Gesture::Tap(screen_x(slot.x), screen_y(slot.y)));
+                        }
+                    }
                     _ => {}
                 }
             } else if self.max_fingers == 1 {
@@ -171,19 +203,44 @@ impl TouchDevice {
                 if let Some(slot) = self
                     .slots
                     .iter()
-                    .max_by_key(|slot| (slot.start_y - slot.y).abs())
+                    .filter(|slot| slot.start_y != i32::MIN && slot.start_x != i32::MIN)
+                    .max_by_key(|slot| (slot.start_y - slot.y).abs() + (slot.start_x - slot.x).abs())
                 {
-                    let delta = slot.start_y - slot.y;
-                    if delta.abs() >= TAP_SLOP {
-                        out.push(Gesture::Page(delta.signum()));
-                    }
+                    out.push(classify_swipe(screen_x(slot.start_x), screen_y(slot.start_y),
+                        screen_x(slot.x), screen_y(slot.y)));
                 }
             }
             self.max_fingers = 0;
+            self.frame_x = None;
             self.frame_y = None;
             self.total_motion = 0;
             self.five_finger_hold_frames = 0;
         }
+    }
+}
+
+fn screen_x(raw: i32) -> i32 { raw.max(0) * fb::SCREEN_W as i32 / TOUCH_MAX_X }
+fn screen_y(raw: i32) -> i32 { raw.max(0) * fb::SCREEN_H as i32 / TOUCH_MAX_Y }
+
+fn classify_swipe(x0: i32, y0: i32, x1: i32, y1: i32) -> Gesture {
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    if x0 <= EDGE_PX && dx >= SWIPE_PX && dx.abs() > dy.abs() {
+        Gesture::OpenDrawer
+    } else if dx <= -SWIPE_PX && dx.abs() > dy.abs() {
+        Gesture::CloseDrawer
+    } else if y0 <= EDGE_PX && dy >= SWIPE_PX && dy.abs() > dx.abs() {
+        Gesture::OpenControls
+    } else {
+        Gesture::Page((-dy).signum())
+    }
+}
+
+/// Classify screen-space points supplied by window-system touch fallback.
+pub fn gesture_from_points(start: (i32, i32), end: (i32, i32)) -> Gesture {
+    if (end.0 - start.0).abs() + (end.1 - start.1).abs() < TAP_SLOP {
+        Gesture::Tap(end.0, end.1)
+    } else {
+        classify_swipe(start.0, start.1, end.0, end.1)
     }
 }
 
@@ -193,13 +250,20 @@ fn five_finger_release_is_quit(max_fingers: usize, hold_frames: usize, motion: i
 
 #[cfg(test)]
 mod tests {
-    use super::{five_finger_release_is_quit, FIVE_FINGER_HOLD_FRAMES, TAP_SLOP};
+    use super::*;
 
     #[test]
     fn five_finger_quit_requires_a_stationary_hold() {
         assert!(!five_finger_release_is_quit(5, FIVE_FINGER_HOLD_FRAMES - 1, 0));
         assert!(!five_finger_release_is_quit(5, FIVE_FINGER_HOLD_FRAMES, TAP_SLOP));
         assert!(five_finger_release_is_quit(5, FIVE_FINGER_HOLD_FRAMES, TAP_SLOP - 1));
+    }
+
+    #[test]
+    fn edge_swipe_is_reserved_for_drawer_not_page_navigation() {
+        assert_eq!(classify_swipe(20, 500, 240, 510), Gesture::OpenDrawer);
+        assert_eq!(classify_swipe(200, 500, 210, 250), Gesture::Page(1));
+        assert_eq!(classify_swipe(300, 500, 100, 510), Gesture::CloseDrawer);
     }
 }
 

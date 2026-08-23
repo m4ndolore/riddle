@@ -1,8 +1,8 @@
 # riddle — the diary of Tom Riddle, for the reMarkable Paper Pro
 
-Write on the page with your pen. After a pause, the diary **drinks your ink** —
+Write on the page with your pen. Rule a line beneath your words and the diary **drinks your ink** —
 your words fade into the paper — the page thinks for a moment, and an answer
-writes itself back in a flowing hand, stroke by stroke, then fades away.
+writes itself back in a flowing hand, stroke by stroke, and remains for you.
 
 No screen glow, no keyboard, no chat UI. Just ink appearing on paper.
 
@@ -26,8 +26,8 @@ remagic install riddle     # checksum-verified download → AppLoad
 remagic config riddle      # settings form in your browser (+ QR for phone)
 ```
 
-Then in **AppLoad**: tap **Reload**, then **The Diary**. Write, and rest your
-pen. (Or install it from the **Store** app right on the tablet.)
+Then in **AppLoad**: tap **Reload**, then **The Diary**. Write, then underline
+the entry to send it. (Or install it from the **Store** app right on the tablet.)
 
 ### Install the prebuilt bundle
 
@@ -36,7 +36,7 @@ pen. (Or install it from the **Store** app right on the tablet.)
 2. Copy the folder to your tablet:
    `scp -O -r riddle root@10.11.99.1:/home/root/xovi/exthome/appload/`
 3. Add an API key: `cp oracle.env.example oracle.env` in that folder and put your `RIDDLE_OPENAI_KEY` in it (any OpenAI-compatible key). Or skip it to use [pi](#option-b--pi-the-power-path).
-4. In **AppLoad**: tap **Reload**, then **The Diary**. Write, and rest your pen.
+4. In **AppLoad**: tap **Reload**, then **The Diary**. Write, then rule a line beneath it.
 
 > ⚠️ **This modifies your device.** The prebuilt bundle and the catalog build
 > run in **takeover mode**: tapping The Diary stops the whole reMarkable UI
@@ -54,7 +54,7 @@ pen. (Or install it from the **Store** app right on the tablet.)
  pen (raw evdev, full 4096-level pressure, hardware event rate)
    │ strokes
    ▼
- riddle ── idle 2.8s → commit page → PNG ──► oracle (resident LLM process,
+ riddle ── underline → commit page → PNG ──► oracle (resident LLM process,
    │                                          streams reply sentence-by-sentence)
    ▼ strokes (Dancing Script → skeletonized to single-pixel pen paths)
  display backend
@@ -78,7 +78,9 @@ pen. (Or install it from the **Store** app right on the tablet.)
 
 | Do this | And |
 |---------|-----|
-| Write, then rest the pen | The diary drinks your ink and Tom replies |
+| Write, then draw a long rule beneath it | The diary drinks your ink and Tom replies |
+| Swipe right from the left edge | Open conversation history |
+| Swipe down from the top edge | Open settings (Stealth) or controls (Guided) |
 | Write *"show me what I wrote about…"* | The remembered page **rises through the paper**: the date, your own handwriting rewriting itself stroke by stroke, Tom's old reply — all in faded ink. Touch the pen anywhere and today's page returns |
 | Write *"what do you remember?"* | Tom answers with a handwritten list of remembered moments |
 | Flip the marker | Erase |
@@ -165,10 +167,8 @@ pi at `/home/root/node/bin` (`RIDDLE_PI_BIN_DIR`), provider `openai-codex`
 Both stream the reply sentence-by-sentence, so the quill starts writing seconds
 before the model finishes. The persona prompt lives in `src/oracle.rs`.
 
-A note on Tom's memory: with the HTTP backend every page is a fresh
-conversation — Tom does not remember your previous page. With pi, the warm
-session remembers everything since the diary was opened (and pi persists
-that session in its own data dir on the tablet).
+A note on Tom's memory: both backends receive the configured recent local
+dialogue and catalog. Pi also keeps its warm session in its own data directory.
 
 If the oracle can't answer — missing key, refused key, no Wi-Fi — Tom writes
 the reason on the page instead of a reply, and the full error goes to the

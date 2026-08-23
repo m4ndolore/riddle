@@ -432,6 +432,21 @@ mod tests {
     }
 
     #[test]
+    fn context_snapshot_is_the_same_dialogue_and_catalog_used_for_requests() {
+        let mut s = tmp_store("snapshot");
+        s.append(40, "first", "one", &vec![]);
+        s.append(50, "second", "two", &vec![]);
+        let expected_history = s.recent_dialogue(1);
+        let (expected_lines, expected_ids) = s.catalog(40);
+        let store = Some(s);
+        let snapshot = crate::oracle::context_snapshot(&store, 1);
+        assert_eq!(snapshot.context.history, expected_history);
+        assert_eq!(snapshot.context.catalog_lines, expected_lines);
+        assert_eq!(snapshot.context.catalog_ids, expected_ids);
+        let _ = std::fs::remove_dir_all(&store.unwrap().dir);
+    }
+
+    #[test]
     fn spoken_dates_read_like_a_diary() {
         // 2026-07-06 23:30 UTC.
         let s = spoken_date(1783467000);

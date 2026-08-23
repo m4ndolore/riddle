@@ -257,6 +257,21 @@ fn turn_text(ctx: &TurnContext) -> String {
     )
 }
 
+/// Pi maintains a live session, but the explicit local dialogue is still
+/// included so the corpus preview and the actual next request cannot drift.
+fn pi_turn_text(ctx: &TurnContext) -> String {
+    let mut out = String::new();
+    if !ctx.history.is_empty() {
+        out.push_str("Recent dialogue (oldest first):\n");
+        for (you, tom) in &ctx.history {
+            out.push_str(&format!("YOU: {you}\nTOM: {tom}\n"));
+        }
+        out.push('\n');
+    }
+    out.push_str(&turn_text(ctx));
+    out
+}
+
 /// A warm pi RPC process. `ask` sends a turn; reply events arrive on the
 /// channel, then the sender is dropped (disconnect = done).
 pub struct PiOracle {
@@ -416,11 +431,11 @@ impl PiOracle {
         *self.parser.lock().unwrap() = Some(StreamParser::new(ctx.catalog_ids.clone()));
         *self.asked.lock().unwrap() = Some(std::time::Instant::now());
 
-        // pi keeps its own conversation, so history isn't resent — only the
-        // catalog (it changes every turn) rides along.
+        // The local dialogue and catalog are both explicit. This keeps the
+        // read-only corpus preview identical to what this request carries.
         let cmd = format!(
             "{{\"type\":\"prompt\",\"message\":{},\"images\":[{{\"type\":\"image\",\"data\":\"{}\",\"mimeType\":\"image/png\"}}]}}\n",
-            json_quote(&turn_text(ctx)),
+            json_quote(&pi_turn_text(ctx)),
             img
         );
         let mut stdin = self.stdin.lock().unwrap();
@@ -806,6 +821,19 @@ fn base64(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pi_prompt_contains_the_exact_snapshot_dialogue_and_catalog() {
+        let ctx = TurnContext {
+            history: vec![("line one\nline two".into(), "answer".into())],
+            catalog_lines: vec!["1. exact catalog row".into()],
+            catalog_ids: vec![77],
+        };
+        let prompt = pi_turn_text(&ctx);
+        assert!(prompt.contains("YOU: line one\nline two\nTOM: answer"));
+        assert!(prompt.contains("Memory catalog (newest first):\n1. exact catalog row"));
+        assert!(!prompt.contains("77"), "internal selected IDs are routing data, not model text");
+    }
 
     #[test]
     fn sse_delta_extraction() {

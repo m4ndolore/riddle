@@ -1,6 +1,6 @@
 //! Non-secret diary preferences, stored separately from oracle credentials.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -97,6 +97,6 @@ mod tests {
 
     #[test]
     fn preference_file_is_not_an_env_or_key_file() {
-        assert_eq!(Path::new("/home/root/riddle-data/preferences").file_name().unwrap(), "preferences");
+        assert_eq!(std::path::Path::new("/home/root/riddle-data/preferences").file_name().unwrap(), "preferences");
     }
 }
