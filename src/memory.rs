@@ -24,12 +24,28 @@ const MIN_POINT_DIST2: i64 = 9;
 
 pub type Strokes = Vec<Vec<(i32, i32, i32)>>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     /// Unix seconds when the page was committed. Also the strokes filename.
     pub id: u64,
     pub transcript: String,
     pub reply: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    pub count: usize,
+    pub oldest: Option<u64>,
+    pub newest: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversationRow {
+    pub id: u64,
+    pub date: String,
+    pub transcript: String,
+    pub reply: String,
+    pub preview: String,
 }
 
 pub struct MemoryStore {
@@ -152,6 +168,35 @@ impl MemoryStore {
 
     pub fn get(&self, id: u64) -> Option<&Entry> {
         self.entries.iter().find(|e| e.id == id)
+    }
+
+    /// Deterministic read-only summary used by the corpus explorer.
+    pub fn stats(&self) -> Stats {
+        Stats {
+            count: self.entries.len(),
+            oldest: self.entries.first().map(|e| e.id),
+            newest: self.entries.last().map(|e| e.id),
+        }
+    }
+
+    /// Chronological, display-ready rows. Empty transcripts are retained.
+    pub fn conversation_rows(&self) -> Vec<ConversationRow> {
+        self.entries.iter().map(|e| ConversationRow {
+            id: e.id,
+            date: spoken_date(e.id),
+            transcript: e.transcript.clone(),
+            reply: e.reply.clone(),
+            preview: one_line(if e.transcript.trim().is_empty() { &e.reply } else { &e.transcript }, 72),
+        }).collect()
+    }
+
+    /// Case-insensitive local transcript/reply search, chronological.
+    pub fn search(&self, query: &str) -> Vec<ConversationRow> {
+        let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
+        self.conversation_rows().into_iter().filter(|row| {
+            let hay = format!("{} {}", row.transcript, row.reply).to_lowercase();
+            words.iter().all(|word| hay.contains(word))
+        }).collect()
     }
 
     /// The last `n` turns as (transcript, reply) pairs, oldest first — the
@@ -357,6 +402,33 @@ mod tests {
         assert!(lines[0].contains("about the rain"));
         assert!(lines[1].contains("about the garden"));
         let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    #[test]
+    fn stats_search_rows_and_empty_transcripts_are_deterministic() {
+        let mut s = tmp_store("read-api");
+        s.append(10, "", "A quiet answer", &vec![]);
+        s.append(20, "Garden notes", "The rain remembers", &vec![]);
+        let stats = s.stats();
+        assert_eq!(stats, Stats { count: 2, oldest: Some(10), newest: Some(20) });
+        let rows = s.conversation_rows();
+        assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![10, 20]);
+        assert_eq!(rows[0].transcript, "");
+        assert_eq!(rows[0].preview, "A quiet answer");
+        assert_eq!(s.search("GARDEN rain").iter().map(|r| r.id).collect::<Vec<_>>(), vec![20]);
+        assert_eq!(s.search("missing").len(), 0);
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    #[test]
+    fn escaped_text_remains_searchable_after_reload() {
+        let mut s = tmp_store("escaped-search");
+        s.append(30, "one\ttwo\\three\nfour", "reply\nline", &vec![]);
+        let dir = s.dir.clone();
+        let mut loaded = MemoryStore { dir, entries: Vec::new() };
+        loaded.load();
+        assert_eq!(loaded.search("two three four")[0].transcript, "one\ttwo\\three\nfour");
+        let _ = std::fs::remove_dir_all(&loaded.dir);
     }
 
     #[test]

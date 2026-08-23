@@ -17,6 +17,7 @@ mod memory;
 mod oracle;
 mod pen;
 mod power;
+mod preferences;
 mod qtfb;
 #[cfg(all(feature = "rm2", not(feature = "takeover")))]
 mod rm2fb;
@@ -214,13 +215,11 @@ fn oracle_test(png: &str) -> i32 {
 /// What the diary sends alongside the page: its memory of recent turns and
 /// the catalog the oracle picks conjured pages from. Empty when memory is off.
 fn build_ctx(store: &Option<memory::MemoryStore>) -> oracle::TurnContext {
-    let Some(s) = store else { return oracle::TurnContext::default() };
     let turns: usize = std::env::var("RIDDLE_MEMORY_TURNS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(6);
-    let (catalog_lines, catalog_ids) = s.catalog(40);
-    oracle::TurnContext { history: s.recent_dialogue(turns), catalog_lines, catalog_ids }
+    oracle::context_snapshot(store, turns).context
 }
 
 fn run() -> std::io::Result<()> {

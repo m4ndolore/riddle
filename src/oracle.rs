@@ -44,7 +44,7 @@ pub fn persona() -> String {
 const MEMORY_PROTOCOL: &str = "\n\nThe diary keeps memories. With each page you receive a numbered catalog of remembered pages, newest first. A FRESH catalog is sent every turn and the numbers are reassigned each time, so only ever use numbers from the catalog on THIS page — never a number you saw earlier.\n\nIf the writer asks to see, revisit, find, or be shown a past page — \"show me…\", \"find the page about…\", \"what did I write on…\" — your ENTIRE reply must be exactly \u{27e6}show:N\u{27e7} and nothing else (no greeting, no prose, before or after), where N is the catalog number of the best match. If they instead ask what you remember in general, reply in words with a short list of remembered moments and their dates. Otherwise reply normally; the catalog is your memory of past pages — draw on it naturally. The catalog's dates are written in English for your eyes only; when you speak of a remembered page, render its date naturally in the language the writer is using.\n\nAfter EVERY response — prose and \u{27e6}show:N\u{27e7} alike — end with a new line containing \u{2042} followed by a faithful word-for-word transcription of what the writer wrote on THIS page (their words only, one line, no commentary). If illegible, put your best attempt after \u{2042}. Earlier replies in this conversation are shown to you without their \u{2042} lines, but you must still end yours with one.";
 
 /// What a turn carries besides the page image: the diary's memory.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct TurnContext {
     /// Recent (transcript, reply) pairs, oldest first.
     pub history: Vec<(String, String)>,
@@ -52,6 +52,33 @@ pub struct TurnContext {
     pub catalog_lines: Vec<String>,
     /// catalog_ids[i] is the memory id behind catalog number i+1.
     pub catalog_ids: Vec<u64>,
+}
+
+/// Read-only description of exactly the non-image context for the next turn.
+/// Credentials are deliberately absent from this type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextSnapshot {
+    pub context: TurnContext,
+    pub provider: String,
+    pub model: String,
+}
+
+pub fn context_snapshot(store: &Option<crate::memory::MemoryStore>, turns: usize) -> ContextSnapshot {
+    let context = match store {
+        Some(s) => {
+            let (catalog_lines, catalog_ids) = s.catalog(40);
+            TurnContext { history: s.recent_dialogue(turns), catalog_lines, catalog_ids }
+        }
+        None => TurnContext::default(),
+    };
+    let (provider, model) = if std::env::var_os("RIDDLE_OPENAI_KEY").is_some() {
+        (std::env::var("RIDDLE_OPENAI_BASE").unwrap_or_else(|_| "https://api.openai.com/v1".into()),
+         std::env::var("RIDDLE_OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()))
+    } else {
+        (std::env::var("RIDDLE_PI_PROVIDER").unwrap_or_else(|_| "openai-codex".into()),
+         std::env::var("RIDDLE_PI_MODEL").unwrap_or_else(|_| "gpt-5.4-mini".into()))
+    };
+    ContextSnapshot { context, provider, model }
 }
 
 /// What the oracle streams back to the diary.
