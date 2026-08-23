@@ -82,8 +82,7 @@ pen. (Or install it from the **Store** app right on the tablet.)
 | Write *"show me what I wrote about…"* | The remembered page **rises through the paper**: the date, your own handwriting rewriting itself stroke by stroke, Tom's old reply — all in faded ink. Touch the pen anywhere and today's page returns |
 | Write *"what do you remember?"* | Tom answers with a handwritten list of remembered moments |
 | Flip the marker | Erase |
-| Draw a large **?** | Summon the built-in guide |
-| Tap five fingers at once | Leave the diary *(takeover mode)* |
+| Hold five fingers, then release | Leave the diary *(takeover mode)* |
 | Power button | The page turns to *"The diary sleeps."*, then the tablet suspends; press again to wake exactly where you were *(takeover mode)* |
 
 In the windowed (qtfb) flavour, xochitl keeps the touchscreen and the power
@@ -214,8 +213,10 @@ scripts, manifest) — copy it to
 detaches into a transient systemd unit, stops xochitl, runs the diary, and
 **always restores xochitl on exit** — leave with a 5-finger tap or SIGTERM
 (`systemctl stop riddle-takeover`); the power button sleeps and wakes the
-diary without leaving it. The unit's stop hook restarts xochitl even if
-riddle dies uncleanly. If anything wedges:
+diary without leaving it. On firmware that denies `/sys/power/wake_lock`,
+the launcher uses a systemd sleep inhibitor and Riddle bypasses it only for
+the explicit power-button suspend. The unit's stop hook restarts xochitl even
+if riddle dies uncleanly. If anything wedges:
 `ssh root@10.11.99.1 'systemctl start xochitl'`.
 
 ### reMarkable 2
@@ -247,7 +248,8 @@ scp -O -r dist/rm2-takeover/riddle root@10.11.99.1:/home/root/xovi/exthome/applo
 ```
 
 Keep SSH open for the first device run. The launcher holds the kernel wake
-lock while xochitl is stopped and its systemd crash hook restores the stock UI
+lock—or a systemd sleep inhibitor when the kernel interface is unavailable—
+while xochitl is stopped, and its systemd crash hook restores the stock UI
 even if Riddle is killed. The older `rm2fb_server` implementation remains in
 the source tree as a fallback, but it is no longer the normal takeover path.
 

@@ -30,7 +30,13 @@ fi
 if [ -z "${REMAGIC_SESSION:-}" ]; then
     # xochitl normally holds this. Without a replacement, kernel autosleep can
     # resume into a second display engine while Riddle still owns the panel.
-    echo riddle-takeover > /sys/power/wake_lock 2>/dev/null || true
+    if ! echo riddle-takeover > /sys/power/wake_lock 2>/dev/null; then
+        if command -v systemd-inhibit >/dev/null 2>&1; then
+            echo "riddle: kernel wakelock unavailable; using systemd sleep inhibitor" >&2
+        else
+            echo "riddle: warning: no sleep-prevention mechanism available" >&2
+        fi
+    fi
     systemctl stop xochitl
 fi
 rm -f /tmp/epframebuffer.lock      # stale EPD lock blocks the engine
@@ -40,7 +46,13 @@ cd "$HERE"
 # libquill.so ships in this bundle; libqsgepaper.so (reMarkable's proprietary
 # engine) comes from the device's own scenegraph plugin dir. We search the
 # bundle first, then a standalone /home/root/quill install, then the plugin dir.
-LD_LIBRARY_PATH="$HERE:/home/root/quill:/usr/lib/plugins/scenegraph" \
-    PAPERTERM_SHELL= HOME=/home/root \
-    "$HERE/riddle"
+if command -v systemd-inhibit >/dev/null 2>&1; then
+    systemd-inhibit --what=sleep --who=Riddle \
+        --why="Riddle owns the e-paper panel during takeover" --mode=block \
+        /usr/bin/env LD_LIBRARY_PATH="$HERE:/home/root/quill:/usr/lib/plugins/scenegraph" \
+        PAPERTERM_SHELL= HOME=/home/root "$HERE/riddle"
+else
+    LD_LIBRARY_PATH="$HERE:/home/root/quill:/usr/lib/plugins/scenegraph" \
+        PAPERTERM_SHELL= HOME=/home/root "$HERE/riddle"
+fi
 echo "riddle-takeover: diary closed ($?), restoring xochitl"

@@ -145,10 +145,9 @@ const BODY_TAKEOVER: &[&str] = &[
     "and the page will rise again.",
     "",
     "Flip the marker to erase.",
-    "Tap five fingers at once to leave.",
+    "Hold five fingers, then release, to leave.",
     "The power button sleeps the diary.",
     "",
-    "A large ? summons this guide.",
 ];
 /// Windowed mode: AppLoad owns the window and xochitl owns the button.
 const BODY_WINDOWED: &[&str] = &[
@@ -162,7 +161,6 @@ const BODY_WINDOWED: &[&str] = &[
     "Flip the marker to erase.",
     "Close the diary from AppLoad.",
     "",
-    "A large ? summons this guide.",
 ];
 const FOOTER: &str = "Touch pen to page to close.";
 

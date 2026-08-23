@@ -419,7 +419,12 @@ fn run() -> std::io::Result<()> {
                 let mut attempts = 0;
                 'sleeping: loop {
                     if p.grabbed {
-                        let _ = std::process::Command::new("systemctl").arg("suspend").status();
+                        // The takeover wrapper blocks ambient sleep with
+                        // systemd-inhibit. This explicit user action is
+                        // intentional, so bypass that inhibitor here.
+                        let _ = std::process::Command::new("systemctl")
+                            .args(["--check-inhibitors=no", "suspend"])
+                            .status();
                     }
                     attempts += 1;
                     let t0 = Instant::now();
@@ -455,6 +460,15 @@ fn run() -> std::io::Result<()> {
         // ---- raw pen (preferred path) ----
         if let Some(ref mut pdev) = pen_dev {
             for s in pdev.drain() {
+                // While the marker is in proximity, its user's palm may
+                // touch the capacitive sensor.  Never let that contact
+                // participate in touch gestures (especially five-finger
+                // quit); the pen is the authoritative input device here.
+                if s.proximity {
+                    if let Some(ref mut td) = touch_dev {
+                        td.suppress();
+                    }
+                }
                 let writing = s.touching && s.pressure > 40;
                 stylus_on = writing;
                 stylus_tapped |= writing;

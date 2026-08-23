@@ -18,6 +18,9 @@ const MAX_SLOTS: usize = 16;
 const SCREEN_H: i32 = 2160;
 const TOUCH_MAX_Y: i32 = 2832;
 const TAP_SLOP: i32 = 45;
+// Require a deliberate hold before five-finger exit.  A single frame can be
+// produced by a writing-hand/palm contact on the reMarkable touch sensor.
+const FIVE_FINGER_HOLD_FRAMES: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gesture {
@@ -44,7 +47,7 @@ pub struct TouchDevice {
     max_fingers: usize,
     frame_y: Option<i32>,
     total_motion: i32,
-    quit_sent: bool,
+    five_finger_hold_frames: usize,
 }
 
 impl TouchDevice {
@@ -69,7 +72,7 @@ impl TouchDevice {
                         max_fingers: 0,
                         frame_y: None,
                         total_motion: 0,
-                        quit_sent: false,
+                        five_finger_hold_frames: 0,
                     });
                 }
             }
@@ -85,7 +88,7 @@ impl TouchDevice {
         self.max_fingers = 0;
         self.frame_y = None;
         self.total_motion = 0;
-        self.quit_sent = false;
+        self.five_finger_hold_frames = 0;
     }
 
     /// Compatibility helper for takeover apps that only use five-finger exit.
@@ -133,9 +136,8 @@ impl TouchDevice {
         let active: Vec<Slot> = self.slots.iter().copied().filter(|s| s.active).collect();
         let count = active.len();
         self.max_fingers = self.max_fingers.max(count);
-        if count >= 5 && !self.quit_sent {
-            self.quit_sent = true;
-            out.push(Gesture::Quit);
+        if count >= 5 {
+            self.five_finger_hold_frames = self.five_finger_hold_frames.saturating_add(1);
         }
 
         let average_y = (count > 0).then(|| active.iter().map(|s| s.y).sum::<i32>() / count as i32);
@@ -152,7 +154,13 @@ impl TouchDevice {
         self.frame_y = average_y;
 
         if count == 0 && self.max_fingers > 0 {
-            if self.total_motion < TAP_SLOP {
+            if five_finger_release_is_quit(
+                self.max_fingers,
+                self.five_finger_hold_frames,
+                self.total_motion,
+            ) {
+                out.push(Gesture::Quit);
+            } else if self.total_motion < TAP_SLOP {
                 match self.max_fingers {
                     2 => out.push(Gesture::Undo),
                     3 => out.push(Gesture::Redo),
@@ -174,8 +182,24 @@ impl TouchDevice {
             self.max_fingers = 0;
             self.frame_y = None;
             self.total_motion = 0;
-            self.quit_sent = false;
+            self.five_finger_hold_frames = 0;
         }
+    }
+}
+
+fn five_finger_release_is_quit(max_fingers: usize, hold_frames: usize, motion: i32) -> bool {
+    max_fingers >= 5 && hold_frames >= FIVE_FINGER_HOLD_FRAMES && motion < TAP_SLOP
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{five_finger_release_is_quit, FIVE_FINGER_HOLD_FRAMES, TAP_SLOP};
+
+    #[test]
+    fn five_finger_quit_requires_a_stationary_hold() {
+        assert!(!five_finger_release_is_quit(5, FIVE_FINGER_HOLD_FRAMES - 1, 0));
+        assert!(!five_finger_release_is_quit(5, FIVE_FINGER_HOLD_FRAMES, TAP_SLOP));
+        assert!(five_finger_release_is_quit(5, FIVE_FINGER_HOLD_FRAMES, TAP_SLOP - 1));
     }
 }
 
