@@ -14,7 +14,9 @@ fn main() {
         println!("cargo:rustc-link-search=native={quill_vendor}");
         println!("cargo:rustc-link-lib=dylib=quill");
         println!("cargo:rustc-link-lib=dylib=qsgepaper");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,/home/root/quill:/usr/lib/plugins/scenegraph");
+        println!(
+            "cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN:/home/root/quill:/usr/lib/plugins/scenegraph"
+        );
         if let Ok(sysroot_lib) = std::env::var("RIDDLE_SDK_SYSROOT_LIB") {
             println!("cargo:rustc-link-arg=-Wl,-rpath-link,{sysroot_lib}");
         }

@@ -5,6 +5,10 @@
 # Exit the diary: power button, 5-finger tap, or SIGTERM. Escape hatch if
 # anything wedges: ssh rm 'systemctl start xochitl'.
 
+# Resolve our own install directory so the bundle works wherever it lives
+# (e.g. /home/root/xovi/exthome/appload/riddle/ when installed via AppLoad).
+HERE=$(cd "$(dirname "$0")" && pwd)
+
 restore() {
     "$HERE/riddle-restore.sh"
 }
@@ -13,10 +17,6 @@ restore() {
 if [ -z "${REMAGIC_SESSION:-}" ]; then
     trap restore EXIT INT TERM
 fi
-
-# Resolve our own install directory so the bundle works wherever it lives
-# (e.g. /home/root/xovi/exthome/appload/riddle/ when installed via AppLoad).
-HERE=$(cd "$(dirname "$0")" && pwd)
 
 # Oracle config: put your API key in oracle.env next to this script, e.g.
 #   RIDDLE_OPENAI_KEY=sk-...
