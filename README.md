@@ -1,5 +1,11 @@
 # riddle — the diary of Tom Riddle, for the reMarkable Paper Pro
 
+> **This fork** maintains reMarkable 2 takeover support. Upstream is
+> [MaximeRivest/riddle](https://github.com/MaximeRivest/riddle) (PR
+> [#4](https://github.com/MaximeRivest/riddle/pull/4) is the older windowed
+> path; this branch ships takeover). Product work beyond the Tom diary lives
+> in [g-pad](https://github.com/m4ndolore/g-pad).
+
 Write on the page with your pen. Rule a line beneath your words and the diary **drinks your ink** —
 your words fade into the paper — the page thinks for a moment, and an answer
 writes itself back in a flowing hand, stroke by stroke, and remains for you.
