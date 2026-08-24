@@ -21,8 +21,8 @@ display backend changes.
 - The page is completely blank at rest.
 - Pen strokes remain indefinitely until the writer draws the send rule.
 - No automatic send by default; idle-send is an opt-in setting.
-- A reply is anchored to the writing and remains until the writer dismisses it
-  or starts a new turn.
+- A reply starts at the top writing line and remains until the writer
+  dismisses it or starts a new turn.
 - Pen eraser remains the only always-available tool affordance.
 
 ### Guided
@@ -44,16 +44,11 @@ secondary drawer, recalled with a deliberate edge swipe from the left margin
 or `HISTORY` in the Guided strip.
 
 - Closed state: no tab, icon, or persistent chrome; the paper stays untouched.
-- Open state: a 5-column drawer occupies roughly 42% of the page, leaving the
-  writing field visible as context.
-- The drawer is a chronological transcript: newest turn at the bottom,
-  flush-left, with a thin rule between turns.
-- The writer's words use the grotesque UI face and a quiet `YOU` label. Tom's
-  answer uses the same body face with a blue `TOM` label. The expressive
-  handwriting remains exclusive to the canvas.
-- Each turn shows date/time, a one-line preview, and an expand affordance.
-  Expanded turns show the full transcript and response without changing the
-  canvas.
+- Open state: a half-page drawer. HISTORY opens the current sitting as a
+  message thread. `←` or the HISTORY tab returns to a conversation selector
+  (sittings split after six hours of silence).
+- The thread is a chronological log: `YOU` then `TOM`, flush-left, newest at
+  the bottom, wrapped in full. Handwriting stays on the canvas.
 - A selected turn offers `REPLAY ON PAGE`, which restores that turn's writing
   and reply to the canvas. It is a view operation, not a new oracle request.
 - The drawer closes by the same edge swipe, a close control, or pen contact on
@@ -91,10 +86,16 @@ The rM2 canvas is 1404×1872. Use a 4×8 grid with a 72 px outer margin and
 the outer modules only. Reply text uses a fixed left edge aligned to the
 writing margin, never a centered fallback.
 
-Reply placement follows one rule: start at the first available grid line below
-the user's writing. If there is not enough room, clear the consumed writing
-area with one intentional refresh and place the reply at the top writing line.
-It must never appear to jump to the middle of the page.
+Reply placement: start at the top writing line. The drink has already taken
+the writer's ink; the reply uses the page, not the leftover strip under the
+entry. Clear the consumed writing region before the first stroke so the
+answer is not written through a ghost. It must never appear to jump to the
+middle of the page.
+
+Parked alternative: keep the drunk entry on the page and start the reply on
+the first grid line below it (`reply_below_writing`), falling back to the
+top writing line only when that leftover strip is too short. Use this if we
+want both hands visible together.
 
 ## Timing and state
 

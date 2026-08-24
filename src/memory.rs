@@ -48,6 +48,16 @@ pub struct ConversationRow {
     pub preview: String,
 }
 
+/// A sitting at the diary: consecutive turns closer than six hours.
+pub struct Conversation {
+    pub date: String,
+    pub preview: String,
+    pub turns: Vec<ConversationRow>,
+}
+
+/// A new sitting starts after this much silence.
+pub const CONVERSATION_GAP_SECS: u64 = 6 * 60 * 60;
+
 pub struct MemoryStore {
     dir: PathBuf,
     pub entries: Vec<Entry>,
@@ -190,6 +200,24 @@ impl MemoryStore {
         }).collect()
     }
 
+    /// Group turns into sittings. A gap longer than six hours starts a new one.
+    pub fn conversations(&self) -> Vec<Conversation> {
+        let mut out = Vec::new();
+        let mut cur: Vec<ConversationRow> = Vec::new();
+        for row in self.conversation_rows() {
+            if let Some(prev) = cur.last() {
+                if row.id.saturating_sub(prev.id) > CONVERSATION_GAP_SECS {
+                    out.push(pack_conversation(std::mem::take(&mut cur)));
+                }
+            }
+            cur.push(row);
+        }
+        if !cur.is_empty() {
+            out.push(pack_conversation(cur));
+        }
+        out
+    }
+
     /// Case-insensitive local transcript/reply search, chronological.
     pub fn search(&self, query: &str) -> Vec<ConversationRow> {
         let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
@@ -233,6 +261,12 @@ impl MemoryStore {
         }
         (lines, ids)
     }
+}
+
+fn pack_conversation(turns: Vec<ConversationRow>) -> Conversation {
+    let date = turns.first().map(|t| t.date.clone()).unwrap_or_default();
+    let preview = turns.first().map(|t| t.preview.clone()).unwrap_or_default();
+    Conversation { date, preview, turns }
 }
 
 /// Collapse whitespace (incl. newlines) to single spaces and cap at `max`
@@ -417,6 +451,21 @@ mod tests {
         assert_eq!(rows[0].preview, "A quiet answer");
         assert_eq!(s.search("GARDEN rain").iter().map(|r| r.id).collect::<Vec<_>>(), vec![20]);
         assert_eq!(s.search("missing").len(), 0);
+        let _ = std::fs::remove_dir_all(&s.dir);
+    }
+
+    #[test]
+    fn conversations_split_on_a_six_hour_gap() {
+        let mut s = tmp_store("conv-gap");
+        s.append(1000, "morning", "hello", &vec![]);
+        s.append(1000 + 60, "still morning", "yes", &vec![]);
+        s.append(1000 + 60 + CONVERSATION_GAP_SECS + 1, "evening", "later", &vec![]);
+        let convs = s.conversations();
+        assert_eq!(convs.len(), 2);
+        assert_eq!(convs[0].turns.len(), 2);
+        assert_eq!(convs[1].turns.len(), 1);
+        assert_eq!(convs[0].preview, "morning");
+        assert_eq!(convs[1].preview, "evening");
         let _ = std::fs::remove_dir_all(&s.dir);
     }
 

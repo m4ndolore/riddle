@@ -41,7 +41,7 @@ pub fn persona() -> String {
 
 /// Appended to the persona when the diary's memory is on: the conjuring
 /// directive and the transcription postscript the app parses back out.
-const MEMORY_PROTOCOL: &str = "\n\nThe diary keeps memories. With each page you receive a numbered catalog of remembered pages, newest first. A FRESH catalog is sent every turn and the numbers are reassigned each time, so only ever use numbers from the catalog on THIS page — never a number you saw earlier.\n\nIf the writer asks to see, revisit, find, or be shown a past page — \"show me…\", \"find the page about…\", \"what did I write on…\" — your ENTIRE reply must be exactly \u{27e6}show:N\u{27e7} and nothing else (no greeting, no prose, before or after), where N is the catalog number of the best match. If they instead ask what you remember in general, reply in words with a short list of remembered moments and their dates. Otherwise reply normally; the catalog is your memory of past pages — draw on it naturally. The catalog's dates are written in English for your eyes only; when you speak of a remembered page, render its date naturally in the language the writer is using.\n\nAfter EVERY response — prose and \u{27e6}show:N\u{27e7} alike — end with a new line containing \u{2042} followed by a faithful word-for-word transcription of what the writer wrote on THIS page (their words only, one line, no commentary). If illegible, put your best attempt after \u{2042}. Earlier replies in this conversation are shown to you without their \u{2042} lines, but you must still end yours with one.";
+const MEMORY_PROTOCOL: &str = "\n\nThe diary keeps memories. With each page you receive a numbered catalog of remembered pages, newest first. A FRESH catalog is sent every turn and the numbers are reassigned each time, so only ever use numbers from the catalog on THIS page — never a number you saw earlier.\n\nThe catalog is private memory for you alone. The writer cannot see it — not above their ink, not below, not as a list on the page. Never mention a catalog, a numbered list, or anything being above or below. When you draw on a remembered page, speak as if you simply remember.\n\nIf the writer asks to see, revisit, find, or be shown a past page — \"show me…\", \"find the page about…\", \"what did I write on…\" — your ENTIRE reply must be exactly \u{27e6}show:N\u{27e7} and nothing else (no greeting, no prose, before or after), where N is the catalog number of the best match. If they instead ask what you remember in general, reply in words with a short list of remembered moments and their dates. Otherwise reply normally; the catalog is your memory of past pages — draw on it naturally. The catalog's dates are written in English for your eyes only; when you speak of a remembered page, render its date naturally in the language the writer is using.\n\nAfter EVERY response — prose and \u{27e6}show:N\u{27e7} alike — end with a new line containing \u{2042} followed by a faithful word-for-word transcription of what the writer wrote on THIS page (their words only, one line, no commentary). If illegible, put your best attempt after \u{2042}. Earlier replies in this conversation are shown to you without their \u{2042} lines, but you must still end yours with one.";
 
 /// What a turn carries besides the page image: the diary's memory.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
@@ -252,7 +252,7 @@ fn turn_text(ctx: &TurnContext) -> String {
         return "Reply to what is written in the diary.".into();
     }
     format!(
-        "Memory catalog (newest first):\n{}\n\nReply to what is written in the diary.",
+        "Private remembered pages, newest first. The writer cannot see this list — never refer to it as a list, a catalog, or as being above or below:\n{}\n\nReply to the writing on the diary page.",
         ctx.catalog_lines.join("\n")
     )
 }
@@ -831,8 +831,24 @@ mod tests {
         };
         let prompt = pi_turn_text(&ctx);
         assert!(prompt.contains("YOU: line one\nline two\nTOM: answer"));
-        assert!(prompt.contains("Memory catalog (newest first):\n1. exact catalog row"));
+        assert!(prompt.contains("Private remembered pages, newest first"));
+        assert!(prompt.contains("1. exact catalog row"));
+        assert!(prompt.contains("writer cannot see this list"));
         assert!(!prompt.contains("77"), "internal selected IDs are routing data, not model text");
+    }
+
+    #[test]
+    fn catalog_is_private_memory_not_a_visible_list() {
+        assert!(MEMORY_PROTOCOL.contains("writer cannot see it"));
+        assert!(MEMORY_PROTOCOL.contains("Never mention a catalog"));
+        let ctx = TurnContext {
+            history: vec![],
+            catalog_lines: vec!["1. garden notes".into()],
+            catalog_ids: vec![1],
+        };
+        let prompt = turn_text(&ctx);
+        assert!(!prompt.contains("Memory catalog (newest first)"));
+        assert!(prompt.contains("never refer to it as a list"));
     }
 
     #[test]

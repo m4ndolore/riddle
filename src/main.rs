@@ -75,11 +75,13 @@ fn env_ms(name: &str, default: u64) -> Duration {
 enum State {
     Listening { last_pen: Option<Instant> },
     Drinking { stage: u32, next: Instant, region: BBox, rx: OracleRx },
-    /// `wrote` is where the user's (drunk) ink was: the reply starts below it.
+    /// `wrote` is where the user's (drunk) ink was: that ghost is cleared
+    /// before the reply, which always starts at the top writing line.
     Thinking { rx: OracleRx, pulse: Instant, blot_on: bool, since: Instant, wrote: BBox },
     Replying { plan: WritePlan, next: Instant, rx: Option<OracleRx> },
     /// A completed reply stays until an explicit dismissal or new turn.
-    Lingering { region: BBox },
+    /// `more` is leftover reply text that did not fit this page.
+    Lingering { region: BBox, more: String },
     FadingReply { stage: u32, next: Instant, region: BBox },
     /// The guide panel. `panel: None` = dismissed, waiting for pen-up so the
     /// dismissing touch doesn't leave a mark on the page.
@@ -91,6 +93,7 @@ enum State {
     /// it and today's page returns. `saved: None` = dismissed, waiting pen-up.
     MemoryShown { saved: Option<Vec<u8>>, until: Instant, region: BBox },
     Drawer { panel: Option<ui::Drawer>, return_to: Box<State> },
+    #[allow(dead_code)]
     ExpandedConversation { panel: Option<ui::Drawer>, return_to: Box<State> },
     Settings { saved: Option<Vec<u8>>, return_to: Box<State> },
 }
@@ -117,6 +120,10 @@ struct WritePlan {
     region: BBox,
     /// Where the next streamed chunk's first line starts.
     next_y: i32,
+    /// Lines that did not fit below `next_y`; shown on the next page.
+    leftover: String,
+    /// Lines actually laid out on this page, for going back.
+    shown: String,
 }
 
 fn main() {
@@ -318,6 +325,8 @@ fn run() -> std::io::Result<()> {
     let mut turn_reply = String::new();
     let mut turn_transcript: Option<String> = None;
     let mut turn_failed = false;
+    let mut reply_pages: Vec<String> = Vec::new();
+    let mut reply_page: usize = 0;
     // Raw stylus contact, tracked in every state (the guide dismisses on it).
     // `stylus_on` is the level; `stylus_tapped` latches any contact seen this
     // loop iteration, so a tap that starts AND ends within one drain still
@@ -440,7 +449,8 @@ fn run() -> std::io::Result<()> {
                 touch::Gesture::OpenDrawer if matches!(state, State::Listening { .. } | State::Lingering { .. }) => {
                     if let Some(saved) = controls_saved.take() { ui::restore_controls(&mut surf, &saved); }
                     let old = std::mem::replace(&mut state, State::Listening { last_pen: None });
-                    let panel = ui::Drawer::open(&surf, ui::DrawerKind::History, drawer_selection, drawer_scroll);
+                    let thread = store.as_ref().and_then(|s| s.conversations().len().checked_sub(1));
+                    let panel = ui::Drawer::open(&surf, ui::DrawerKind::History, drawer_selection, 0, thread);
                     let snapshot = oracle::context_snapshot(&store, memory_turns());
                     ui::draw_drawer(&mut surf, &ui_font, &store, &snapshot, &panel);
                     disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
@@ -448,6 +458,10 @@ fn run() -> std::io::Result<()> {
                 }
                 touch::Gesture::CloseDrawer => {
                     close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
+                }
+                touch::Gesture::Page(delta) if matches!(state, State::Lingering { .. }) => {
+                    let _ = step_reply_page(delta, &font, reply_w, &mut reply_pages, &mut reply_page,
+                        &mut state, &mut surf, &disp);
                 }
                 touch::Gesture::Scroll(delta) | touch::Gesture::Page(delta) => {
                     let panel = match &mut state {
@@ -463,6 +477,13 @@ fn run() -> std::io::Result<()> {
                     }
                 }
                 touch::Gesture::Tap(x, y) => {
+                    if matches!(state, State::Lingering { .. }) {
+                        if step_reply_page(1, &font, reply_w, &mut reply_pages, &mut reply_page,
+                            &mut state, &mut surf, &disp)
+                        {
+                            continue;
+                        }
+                    }
                     if controls_saved.is_some() {
                         let action = ui::control_action(x, y, matches!(state, State::Lingering { .. }));
                         if let Some(saved) = controls_saved.take() { ui::restore_controls(&mut surf, &saved); }
@@ -470,7 +491,7 @@ fn run() -> std::io::Result<()> {
                         apply_control(action, &mut state, &mut surf, &disp, &ui_font, &store,
                             &mut user_ink, &mut send_mode, &mut sleep_requested, &mut prefs,
                             &mut idle_commit, drawer_selection, drawer_scroll);
-                    } else if let State::Settings { saved, .. } = &mut state {
+                    } else if matches!(state, State::Settings { .. }) {
                         let action = ui::settings_action(x, y);
                         match action {
                             ui::Action::SetMode(mode) => { prefs.mode = mode; let _ = prefs.save(); }
@@ -479,13 +500,12 @@ fn run() -> std::io::Result<()> {
                                 idle_commit = Duration::from_millis(prefs.idle_send_ms); let _ = prefs.save();
                             }
                             ui::Action::Close => {
-                                if let Some(bytes) = saved.take() { surf.paste_rect(0, 0, ui::PANEL_W, SCREEN_H, &bytes); }
+                                close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
+                                continue;
                             }
                             _ => {}
                         }
-                        if !matches!(action, ui::Action::Close) {
-                            ui::draw_settings(&mut surf, &ui_font, prefs);
-                        }
+                        ui::draw_settings(&mut surf, &ui_font, prefs);
                         disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
                     } else {
                         let action = match &mut state {
@@ -571,7 +591,10 @@ fn run() -> std::io::Result<()> {
                 // touch the capacitive sensor.  Never let that contact
                 // participate in touch gestures (especially five-finger
                 // quit); the pen is the authoritative input device here.
-                if s.proximity {
+                if s.proximity && !matches!(state,
+                    State::Settings { .. } | State::Drawer { .. }
+                    | State::ExpandedConversation { .. } | State::Help { .. })
+                {
                     if let Some(ref mut td) = touch_dev {
                         td.suppress();
                     }
@@ -602,6 +625,13 @@ fn run() -> std::io::Result<()> {
                     }
                     continue;
                 }
+                if matches!(state, State::Settings { .. } | State::Drawer { .. } | State::ExpandedConversation { .. }) {
+                    if !control_pen_latched {
+                        queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
+                        control_pen_latched = true;
+                    }
+                    continue;
+                }
                 match state {
                     State::Listening { ref mut last_pen } => {
                         pen_down = true;
@@ -618,20 +648,12 @@ fn run() -> std::io::Result<()> {
                         }
                         *last_pen = Some(Instant::now());
                     }
-                    State::Lingering { region, .. } => {
-                        state = State::FadingReply { stage: 0, next: Instant::now(), region };
-                    }
-                    State::Drawer { ref mut panel, .. } | State::ExpandedConversation { ref mut panel, .. } => {
-                        if let Some(p) = panel.take() {
-                            drawer_selection = p.selection; drawer_scroll = p.scroll;
-                            let region = p.close(&mut surf); let (x, y, w, h) = region.rect();
-                            disp.update(x, y, w, h, false);
-                        }
-                    }
-                    State::Settings { ref mut saved, .. } => {
-                        if let Some(bytes) = saved.take() {
-                            surf.paste_rect(0, 0, ui::PANEL_W, SCREEN_H, &bytes);
-                            disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
+                    State::Lingering { region, ref more } => {
+                        if more.is_empty() && reply_page + 1 >= reply_pages.len() {
+                            state = State::FadingReply { stage: 0, next: Instant::now(), region };
+                        } else if !control_pen_latched {
+                            queued_gestures.push(touch::Gesture::Page(1));
+                            control_pen_latched = true;
                         }
                     }
                     _ => {}
@@ -669,18 +691,18 @@ fn run() -> std::io::Result<()> {
                             ink_dirty.add(d.x1, d.y1, 0);
                         }
                         *last_pen = Some(Instant::now());
-                    } else if let State::Lingering { region, .. } = state {
-                        state = State::FadingReply { stage: 0, next: Instant::now(), region };
-                    } else if let State::Drawer { ref mut panel, .. } | State::ExpandedConversation { ref mut panel, .. } = state {
-                        if let Some(p) = panel.take() {
-                            drawer_selection = p.selection; drawer_scroll = p.scroll;
-                            let region = p.close(&mut surf); let (x, y, w, h) = region.rect();
-                            disp.update(x, y, w, h, false);
+                    } else if let State::Lingering { region, more } = &state {
+                        if more.is_empty() && reply_page + 1 >= reply_pages.len() {
+                            let region = *region;
+                            state = State::FadingReply { stage: 0, next: Instant::now(), region };
+                        } else if !control_pen_latched {
+                            queued_gestures.push(touch::Gesture::Page(1));
+                            control_pen_latched = true;
                         }
-                    } else if let State::Settings { ref mut saved, .. } = state {
-                        if let Some(bytes) = saved.take() {
-                            surf.paste_rect(0, 0, ui::PANEL_W, SCREEN_H, &bytes);
-                            disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
+                    } else if matches!(state, State::Settings { .. } | State::Drawer { .. } | State::ExpandedConversation { .. }) {
+                        if !control_pen_latched {
+                            queued_gestures.push(touch::Gesture::Tap(ev.x, ev.y));
+                            control_pen_latched = true;
                         }
                     }
                 }
@@ -767,6 +789,8 @@ fn run() -> std::io::Result<()> {
                         turn_reply.clear();
                         turn_transcript = None;
                         turn_failed = false;
+                        reply_pages.clear();
+                        reply_page = 0;
                         // Ask NOW: the model streams while the diary drinks the
                         // ink, hiding most of the reply latency in the animation.
                         let (tx, rx) = mpsc::channel();
@@ -797,9 +821,6 @@ fn run() -> std::io::Result<()> {
                     disp.update(x, y, w, h, true);
                     if stage + 1 >= STAGES {
                         user_ink.clear();
-                        // No flashing ghost-clear here: field testing hated
-                        // full-screen flashes. The ghost of the drunk ink
-                        // stays, and the reply writes below it instead.
                         State::Thinking { rx, pulse: Instant::now(), blot_on: false, since: Instant::now(), wrote: region }
                     } else {
                         State::Drinking { stage: stage + 1, next: Instant::now() + Duration::from_millis(70), region, rx }
@@ -883,17 +904,15 @@ fn run() -> std::io::Result<()> {
                 if let Some(ref r) = rx {
                     let drop_rx = match r.try_recv() {
                         Ok(Ok(Event::Ink(more))) => {
-                            if plan.next_y > SCREEN_H as i32 - 200 {
-                                // The page is full: let the rest go unwritten
-                                // rather than inking below the visible page.
-                                eprintln!("riddle: reply reached the page bottom; trailing text dropped");
-                                true
+                            turn_reply.push_str(" ");
+                            turn_reply.push_str(&more);
+                            if !plan.leftover.is_empty() {
+                                plan.leftover.push(' ');
+                                plan.leftover.push_str(&more);
                             } else {
-                                turn_reply.push_str(" ");
-                                turn_reply.push_str(&more);
                                 append_reply(&font, &mut plan, &more);
-                                false
                             }
+                            false
                         }
                         Ok(Ok(Event::Transcript(t))) => {
                             turn_transcript = Some(t);
@@ -953,8 +972,13 @@ fn run() -> std::io::Result<()> {
                             }
                         }
                         turn_strokes = Vec::new();
+                        if !plan.shown.is_empty() {
+                            reply_pages.push(plan.shown.clone());
+                            reply_page = reply_pages.len() - 1;
+                        }
                         let region = plan.region;
-                        State::Lingering { region }
+                        let more = plan.leftover;
+                        State::Lingering { region, more }
                     } else {
                         State::Replying { plan, next: Instant::now() + Duration::from_millis(14), rx }
                     }
@@ -963,7 +987,7 @@ fn run() -> std::io::Result<()> {
                 }
             }
 
-            State::Lingering { region } => State::Lingering { region },
+            State::Lingering { region, more } => State::Lingering { region, more },
 
             State::Help { panel, until } => match panel {
                 Some(p) => {
@@ -1096,23 +1120,36 @@ fn memory_turns() -> usize {
 
 const TOP_WRITING_LINE: i32 = 144;
 const GRID_LINE: i32 = 216;
+/// Room a below-writing reply needs before we give up and use the top line.
+const BELOW_WRITING_MIN_ROOM: i32 = 900;
+/// Gap between the drunk ink and a below-writing reply.
+const BELOW_WRITING_GAP: i32 = 48;
 
-/// First grid line below the writer. If a useful reply cannot fit, turn the
-/// page once and use the top line; there is no opportunistic center fallback.
+/// Replies always start at the top writing line so a normal-length answer
+/// fits. The drink already took the writer's ink; erase that ghost locally
+/// (no full-page flash) so Tom is not writing through it.
 fn prepare_reply_anchor(wrote: BBox, surf: &mut Surface, disp: &display::Display) -> i32 {
-    let (anchored, refresh) = reply_anchor(wrote);
-    if refresh {
-        surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
-        disp.full_refresh(surf.w, surf.h);
+    if !wrote.is_empty() {
+        let (x, y, w, h) = wrote.rect();
+        surf.fill_rect(x as usize, y as usize, w as usize, h as usize, WHITE);
+        disp.update(x, y, w, h, true);
     }
-    anchored
+    reply_anchor(wrote)
 }
 
-fn reply_anchor(wrote: BBox) -> (i32, bool) {
+fn reply_anchor(_wrote: BBox) -> i32 {
+    TOP_WRITING_LINE
+}
+
+/// Parked: first grid line below the writer's ink, or the top writing line if
+/// a useful reply cannot fit. For a future mode where the entry and Tom's
+/// reply share the page instead of the reply taking the whole sheet.
+#[allow(dead_code)]
+fn reply_below_writing(wrote: BBox) -> (i32, bool) {
     if wrote.is_empty() { return (TOP_WRITING_LINE, false); }
-    let below = wrote.y1 + 48;
+    let below = wrote.y1 + BELOW_WRITING_GAP;
     let anchored = ((below + GRID_LINE - 1) / GRID_LINE) * GRID_LINE;
-    if anchored > SCREEN_H as i32 - 900 {
+    if anchored > SCREEN_H as i32 - BELOW_WRITING_MIN_ROOM {
         (TOP_WRITING_LINE, true)
     } else {
         (anchored.max(TOP_WRITING_LINE), false)
@@ -1149,7 +1186,8 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
             user_ink.clear(); *state = State::Listening { last_pen: None };
         }
         ui::Action::Dismiss => {
-            if let State::Lingering { region } = *state {
+            if let State::Lingering { region, .. } = state {
+                let region = *region;
                 *state = State::FadingReply { stage: 0, next: Instant::now(), region };
             }
         }
@@ -1157,7 +1195,10 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
             if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
                 let old = std::mem::replace(state, State::Listening { last_pen: None });
                 let kind = if action == ui::Action::History { ui::DrawerKind::History } else { ui::DrawerKind::Corpus };
-                let panel = ui::Drawer::open(surf, kind, selection, scroll);
+                let thread = if kind == ui::DrawerKind::History {
+                    store.as_ref().and_then(|s| s.conversations().len().checked_sub(1))
+                } else { None };
+                let panel = ui::Drawer::open(surf, kind, selection, scroll, thread);
                 let snapshot = oracle::context_snapshot(store, memory_turns());
                 ui::draw_drawer(surf, ui_font, store, &snapshot, &panel);
                 disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
@@ -1193,16 +1234,25 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
         if let Some(next) = conjure(reply_font, store, id, surf, disp) { *state = next; }
         return;
     }
-    let mut expanded = false;
     let mut redraw = false;
     if let State::Drawer { panel: Some(p), .. } | State::ExpandedConversation { panel: Some(p), .. } = state {
         match action {
-            ui::Action::History => { p.kind = ui::DrawerKind::History; p.expanded = false; redraw = true; }
-            ui::Action::Corpus => { p.kind = ui::DrawerKind::Corpus; p.expanded = false; redraw = true; }
+            ui::Action::History => {
+                if p.kind == ui::DrawerKind::History && p.thread.is_some() {
+                    p.thread = None; p.scroll = 0; p.selection = None;
+                } else {
+                    p.kind = ui::DrawerKind::History;
+                    p.thread = store.as_ref().and_then(|s| s.conversations().len().checked_sub(1));
+                    p.scroll = 0;
+                }
+                redraw = true;
+            }
+            ui::Action::Threads => { p.thread = None; p.scroll = 0; p.selection = None; redraw = true; }
+            ui::Action::OpenThread(i) => { p.thread = Some(i); p.scroll = 0; p.selection = None; redraw = true; }
+            ui::Action::Corpus => { p.kind = ui::DrawerKind::Corpus; p.scroll = 0; redraw = true; }
             ui::Action::None => redraw = true,
             _ => {}
         }
-        expanded = p.expanded;
         *selection = p.selection; *scroll = p.scroll;
         if redraw {
             let snapshot = oracle::context_snapshot(store, memory_turns());
@@ -1210,12 +1260,6 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
         }
     }
-    let old = std::mem::replace(state, State::Listening { last_pen: None });
-    *state = match (expanded, old) {
-        (true, State::Drawer { panel, return_to }) => State::ExpandedConversation { panel, return_to },
-        (false, State::ExpandedConversation { panel, return_to }) => State::Drawer { panel, return_to },
-        (_, other) => other,
-    };
 }
 
 /// If the most recent stroke is the "send rule" (a long flat line ruled under
@@ -1376,15 +1420,15 @@ fn plan_reply(font: &FontRef, text: &str, y_start: Option<i32>) -> WritePlan {
         ((seed >> 16) % 7) as i32 - 3
     };
 
-    // Never write past the bottom of the page: stop laying out lines once the
-    // next one wouldn't fit. A reply that would overflow is truncated on the
-    // page rather than spilling off it (the persona keeps replies short, so
-    // this is a guard, not the normal path).
     let y_limit = SCREEN_H as i32 - line_h;
-    for line_text in &lines {
+    let mut leftover = String::new();
+    let mut shown_lines: Vec<String> = Vec::new();
+    for (idx, line_text) in lines.iter().enumerate() {
         if y > y_limit {
+            leftover = lines[idx..].join(" ");
             break;
         }
+        shown_lines.push(line_text.clone());
         let mut raster = script::rasterize_line(font, line_text, REPLY_PX);
         script::thin(&mut raster);
         let line_strokes = script::trace(&raster);
@@ -1400,12 +1444,21 @@ fn plan_reply(font: &FontRef, text: &str, y_start: Option<i32>) -> WritePlan {
         y += line_h;
     }
 
-    WritePlan { strokes, stroke_i: 0, point_i: 0, region, next_y: y }
+    WritePlan { strokes, stroke_i: 0, point_i: 0, region, next_y: y, leftover,
+        shown: shown_lines.join(" ") }
 }
 
 /// Splice a streamed continuation chunk into a running write animation.
 fn append_reply(font: &FontRef, plan: &mut WritePlan, more: &str) {
     let cont = plan_reply(font, more, Some(plan.next_y));
+    if !cont.leftover.is_empty() {
+        if !plan.leftover.is_empty() { plan.leftover.push(' '); }
+        plan.leftover.push_str(&cont.leftover);
+    }
+    if !cont.shown.is_empty() {
+        if !plan.shown.is_empty() { plan.shown.push(' '); }
+        plan.shown.push_str(&cont.shown);
+    }
     if cont.strokes.is_empty() {
         return;
     }
@@ -1415,20 +1468,99 @@ fn append_reply(font: &FontRef, plan: &mut WritePlan, more: &str) {
     plan.next_y = cont.next_y;
 }
 
+fn continue_reply(font: &FontRef, leftover: String, state: &mut State, surf: &mut Surface, disp: &display::Display) {
+    surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+    disp.full_refresh(surf.w, surf.h);
+    let plan = plan_reply(font, leftover.trim(), Some(TOP_WRITING_LINE));
+    *state = State::Replying { plan, next: Instant::now(), rx: None };
+}
+
+fn paint_reply_page(font: &FontRef, text: &str, reply_w: i32, surf: &mut Surface, disp: &display::Display) -> BBox {
+    surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+    disp.full_refresh(surf.w, surf.h);
+    let plan = plan_reply(font, text, Some(TOP_WRITING_LINE));
+    for stroke in &plan.strokes {
+        for (i, &(x, y)) in stroke.iter().enumerate() {
+            if i == 0 {
+                surf.stamp(x, y, reply_w, BLACK);
+            } else {
+                let (px, py) = stroke[i - 1];
+                surf.brush_line(px, py, x, y, reply_w, BLACK);
+            }
+        }
+    }
+    if !plan.region.is_empty() {
+        let (x, y, w, h) = plan.region.rect();
+        disp.update(x, y, w, h, true);
+    }
+    plan.region
+}
+
+fn step_reply_page(dir: i32, font: &FontRef, reply_w: i32, pages: &mut Vec<String>, index: &mut usize,
+    state: &mut State, surf: &mut Surface, disp: &display::Display) -> bool
+{
+    let more = match state {
+        State::Lingering { more, .. } => more.clone(),
+        _ => return false,
+    };
+    if dir > 0 {
+        if *index + 1 < pages.len() {
+            *index += 1;
+            let region = paint_reply_page(font, &pages[*index], reply_w, surf, disp);
+            *state = State::Lingering { region, more };
+            return true;
+        }
+        if !more.is_empty() {
+            continue_reply(font, more, state, surf, disp);
+            return true;
+        }
+        return false;
+    }
+    if dir < 0 && *index > 0 {
+        *index -= 1;
+        let region = paint_reply_page(font, &pages[*index], reply_w, surf, disp);
+        *state = State::Lingering { region, more };
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod ux_tests {
     use super::*;
 
     #[test]
-    fn reply_is_anchored_below_writing_or_uses_one_top_refresh() {
+    fn reply_starts_at_the_top_writing_line() {
         let mut wrote = BBox::empty(); wrote.add(100, 500, 0); wrote.add(300, 700, 0);
-        let (y, refresh) = reply_anchor(wrote);
+        assert_eq!(reply_anchor(wrote), TOP_WRITING_LINE);
+
+        let mut low = BBox::empty(); low.add(100, SCREEN_H as i32 - 200, 0);
+        assert_eq!(reply_anchor(low), TOP_WRITING_LINE);
+        assert_eq!(reply_anchor(BBox::empty()), TOP_WRITING_LINE);
+    }
+
+    #[test]
+    fn parked_below_writing_offset_keeps_entry_and_reply_on_the_page() {
+        let mut wrote = BBox::empty(); wrote.add(100, 500, 0); wrote.add(300, 700, 0);
+        let (y, refresh) = reply_below_writing(wrote);
         assert_eq!(y % GRID_LINE, 0);
         assert!(y > 700);
         assert!(!refresh);
 
         let mut low = BBox::empty(); low.add(100, SCREEN_H as i32 - 200, 0);
-        assert_eq!(reply_anchor(low), (TOP_WRITING_LINE, true));
-        assert_eq!(reply_anchor(BBox::empty()), (TOP_WRITING_LINE, false));
+        assert_eq!(reply_below_writing(low), (TOP_WRITING_LINE, true));
+        assert_eq!(reply_below_writing(BBox::empty()), (TOP_WRITING_LINE, false));
+    }
+
+    #[test]
+    fn long_reply_keeps_unfitted_lines_for_the_next_page() {
+        let font = FontRef::try_from_slice(FONT_TTF).unwrap();
+        let text = "word ".repeat(400);
+        let plan = plan_reply(&font, &text, Some(TOP_WRITING_LINE));
+        assert!(!plan.leftover.is_empty(), "a long reply must leave leftover text");
+        assert!(!plan.shown.is_empty());
+        assert!(plan.next_y <= SCREEN_H as i32);
+        let again = plan_reply(&font, &plan.leftover, Some(TOP_WRITING_LINE));
+        assert!(!again.strokes.is_empty(), "leftover must be writable on a fresh page");
     }
 }

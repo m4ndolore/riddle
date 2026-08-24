@@ -11,11 +11,16 @@ use crate::script;
 use crate::surface::{Surface, BLACK, WHITE};
 
 pub const UI_FONT_TTF: &[u8] = include_bytes!("../fonts/LiberationSans-Regular.ttf");
-pub const PANEL_W: usize = SCREEN_W * 42 / 100;
+pub const PANEL_W: usize = SCREEN_W * 50 / 100;
 const LABEL_PX: f32 = 32.0;
 const TITLE_PX: f32 = 64.0;
 const PAD: usize = 36;
 const BLUE: u16 = 0x0335;
+const HEADER_H: i32 = 105;
+const THREAD_Y0: i32 = 148;
+const CONV_ROW_H: usize = 168;
+const THREAD_FOOTER: i32 = 150;
+const SCROLL_STEP: i32 = 80;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawerKind { History, Corpus }
@@ -24,7 +29,8 @@ pub struct Drawer {
     pub kind: DrawerKind,
     pub selection: Option<usize>,
     pub scroll: i32,
-    pub expanded: bool,
+    /// `Some` opens that sitting as a thread; `None` shows the conversation list.
+    pub thread: Option<usize>,
     saved: Vec<u8>,
 }
 
@@ -35,6 +41,8 @@ pub enum Action {
     History,
     Corpus,
     Replay(u64),
+    Threads,
+    OpenThread(usize),
     Send,
     Erase,
     NewPage,
@@ -46,8 +54,8 @@ pub enum Action {
 }
 
 impl Drawer {
-    pub fn open(surf: &Surface, kind: DrawerKind, selection: Option<usize>, scroll: i32) -> Self {
-        Self { kind, selection, scroll, expanded: false,
+    pub fn open(surf: &Surface, kind: DrawerKind, selection: Option<usize>, scroll: i32, thread: Option<usize>) -> Self {
+        Self { kind, selection, scroll, thread,
             saved: surf.copy_rect(0, 0, PANEL_W, SCREEN_H) }
     }
 
@@ -62,26 +70,32 @@ impl Drawer {
 
     pub fn tap(&mut self, x: i32, y: i32, store: &Option<MemoryStore>) -> Action {
         if x < 0 || x >= PANEL_W as i32 { return Action::Close; }
-        if y < 105 {
-            if x < 100 { return Action::Close; }
+        if y < HEADER_H {
+            if x < 100 {
+                return if self.kind == DrawerKind::History && self.thread.is_some() {
+                    Action::Threads
+                } else {
+                    Action::Close
+                };
+            }
             if x < PANEL_W as i32 / 2 { return Action::History; }
             return Action::Corpus;
         }
         if self.kind == DrawerKind::Corpus { return Action::None; }
         let Some(s) = store else { return Action::None };
-        let rows = s.conversation_rows();
-        if self.expanded && y > SCREEN_H as i32 - 150 {
-            return self.selection.and_then(|i| rows.get(i)).map(|r| Action::Replay(r.id)).unwrap_or(Action::None);
+        let convs = s.conversations();
+        if let Some(ti) = self.thread {
+            let Some(conv) = convs.get(ti) else { return Action::Threads };
+            if self.selection.is_some() && y > SCREEN_H as i32 - THREAD_FOOTER {
+                return self.selection.and_then(|i| conv.turns.get(i)).map(|r| Action::Replay(r.id)).unwrap_or(Action::None);
+            }
+            if let Some(i) = thread_index_at(y, self.scroll, &conv.turns) {
+                self.selection = Some(i);
+            }
+            return Action::None;
         }
-        let visible = 7usize;
-        let base = rows.len().saturating_sub(visible + self.scroll as usize);
-        let shown = rows.len().saturating_sub(base).min(visible);
-        let y0 = 135 + (visible - shown) * 220;
-        if y < y0 as i32 { return Action::None; }
-        let i = base + ((y as usize - y0) / 220);
-        if i < rows.len() {
-            if self.selection == Some(i) { self.expanded = !self.expanded; }
-            else { self.selection = Some(i); self.expanded = false; }
+        if let Some(i) = selector_index_at(y, convs.len(), self.scroll) {
+            return Action::OpenThread(i);
         }
         Action::None
     }
@@ -91,7 +105,8 @@ pub fn draw_drawer(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStor
     snapshot: &ContextSnapshot, drawer: &Drawer) {
     surf.fill_rect(0, 0, PANEL_W, SCREEN_H, WHITE);
     surf.fill_rect(PANEL_W - 2, 0, 2, SCREEN_H, BLACK);
-    text(surf, font, "×", LABEL_PX, PAD, 36, BLACK);
+    let close = if drawer.kind == DrawerKind::History && drawer.thread.is_some() { "←" } else { "×" };
+    text(surf, font, close, LABEL_PX, PAD, 36, BLACK);
     text(surf, font, "HISTORY", LABEL_PX, 105, 36,
         if drawer.kind == DrawerKind::History { BLUE } else { BLACK });
     text(surf, font, "CORPUS", LABEL_PX, PANEL_W / 2 + 18, 36,
@@ -108,38 +123,108 @@ fn draw_history(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStore>,
         text(surf, font, "MEMORY DISABLED", TITLE_PX, PAD, 170, BLACK);
         return;
     };
-    let rows = store.conversation_rows();
-    if rows.is_empty() {
+    let convs = store.conversations();
+    if convs.is_empty() {
         text(surf, font, "NO CONVERSATIONS YET", LABEL_PX, PAD, 170, BLACK);
         return;
     }
-    if drawer.expanded {
-        let Some(row) = drawer.selection.and_then(|i| rows.get(i)) else { return };
-        text(surf, font, &row.date, LABEL_PX, PAD, 145, BLACK);
-        text(surf, font, "YOU", LABEL_PX, PAD, 210, BLACK);
-        let mut y = wrapped(surf, font, &row.transcript, LABEL_PX, PAD, 255, PANEL_W - 2 * PAD, BLACK, 8);
-        y += 30;
-        text(surf, font, "TOM", LABEL_PX, PAD, y, BLUE);
-        wrapped(surf, font, &row.reply, LABEL_PX, PAD, y + 45, PANEL_W - 2 * PAD, BLACK, 12);
-        rule(surf, PAD, SCREEN_H - 160, PANEL_W - 2 * PAD, 2);
-        text(surf, font, "REPLAY ON PAGE", LABEL_PX, PAD, SCREEN_H - 115, BLUE);
+    if let Some(ti) = drawer.thread {
+        let Some(conv) = convs.get(ti) else { return };
+        draw_thread(surf, font, conv, drawer);
         return;
     }
-    let visible = 7usize;
-    let start = rows.len().saturating_sub(visible + drawer.scroll as usize);
-    let shown = rows.len().saturating_sub(start).min(visible);
-    let mut y = 135usize + (visible - shown) * 220;
-    for (i, row) in rows.iter().enumerate().skip(start).take(visible) {
-        text(surf, font, &row.date, LABEL_PX, PAD, y, BLACK);
-        text(surf, font, "YOU", LABEL_PX, PAD, y + 43, BLACK);
-        text(surf, font, if row.preview.is_empty() { "(NO TRANSCRIPT)" } else { &row.preview },
-            LABEL_PX, PAD + 82, y + 43, BLACK);
-        text(surf, font, "TOM", LABEL_PX, PAD, y + 91, BLUE);
-        text(surf, font, &one_line(&row.reply, 44), LABEL_PX, PAD + 82, y + 91, BLACK);
-        if drawer.selection == Some(i) { surf.fill_rect(12, y - 5, 5, 128, BLUE); }
-        rule(surf, PAD, y + 145, PANEL_W - 2 * PAD, 1);
-        y += 220;
+    draw_selector(surf, font, &convs, drawer.scroll);
+}
+
+fn draw_selector(surf: &mut Surface, font: &FontRef, convs: &[crate::memory::Conversation], scroll: i32) {
+    let mut y = HEADER_H as usize + 16;
+    for conv in convs.iter().rev().skip(scroll.max(0) as usize) {
+        if y + CONV_ROW_H > SCREEN_H { break; }
+        let count = if conv.turns.len() == 1 { "1 TURN".into() } else { format!("{} TURNS", conv.turns.len()) };
+        let preview = if conv.preview.is_empty() { "(NO TRANSCRIPT)".into() } else { one_line(&conv.preview, 42) };
+        text(surf, font, &conv.date, LABEL_PX, PAD, y, BLACK);
+        text(surf, font, &count, LABEL_PX, PAD, y + 42, BLUE);
+        text(surf, font, &preview, LABEL_PX, PAD, y + 84, BLACK);
+        rule(surf, PAD, y + CONV_ROW_H - 16, PANEL_W - 2 * PAD, 1);
+        y += CONV_ROW_H;
     }
+}
+
+fn draw_thread(surf: &mut Surface, font: &FontRef, conv: &crate::memory::Conversation, drawer: &Drawer) {
+    text(surf, font, &conv.date, LABEL_PX, PAD, 112, BLUE);
+    let blocks = thread_blocks(font, &conv.turns);
+    let visible_h = SCREEN_H as i32 - THREAD_Y0 - THREAD_FOOTER;
+    let content_h = blocks.last().map(|b| b.y1).unwrap_or(0);
+    let max_off = (content_h - visible_h).max(0);
+    let offset = (max_off - drawer.scroll * SCROLL_STEP).max(0);
+    for (i, b) in blocks.iter().enumerate() {
+        let y = THREAD_Y0 + b.y0 - offset;
+        if y + b.h < HEADER_H + 8 || y > SCREEN_H as i32 - THREAD_FOOTER { continue; }
+        let turn = &conv.turns[b.turn];
+        if b.you {
+            text(surf, font, "YOU", LABEL_PX, PAD, y.max(HEADER_H + 8) as usize, BLACK);
+            wrapped(surf, font, &turn.transcript, LABEL_PX, PAD, (y + 36).max(HEADER_H as i32 + 8) as usize,
+                PANEL_W - 2 * PAD, BLACK, 8);
+        } else {
+            text(surf, font, "TOM", LABEL_PX, PAD, y.max(HEADER_H + 8) as usize, BLUE);
+            wrapped(surf, font, &turn.reply, LABEL_PX, PAD, (y + 36).max(HEADER_H as i32 + 8) as usize,
+                PANEL_W - 2 * PAD, BLACK, 10);
+        }
+        if drawer.selection == Some(b.turn) {
+            surf.fill_rect(12, y.max(HEADER_H + 8) as usize, 5, (b.h as usize).min(120), BLUE);
+        }
+        let _ = i;
+    }
+    if drawer.selection.is_some() {
+        rule(surf, PAD, SCREEN_H - THREAD_FOOTER as usize + 8, PANEL_W - 2 * PAD, 2);
+        text(surf, font, "REPLAY ON PAGE", LABEL_PX, PAD, SCREEN_H - 100, BLUE);
+    }
+}
+
+struct ThreadBlock { turn: usize, you: bool, y0: i32, y1: i32, h: i32 }
+
+fn thread_blocks(font: &FontRef, turns: &[crate::memory::ConversationRow]) -> Vec<ThreadBlock> {
+    let width = (PANEL_W - 2 * PAD) as f32;
+    let mut y = 0i32;
+    let mut out = Vec::new();
+    for (i, turn) in turns.iter().enumerate() {
+        let you_n = script::wrap(font, &turn.transcript, LABEL_PX, width).len().min(8).max(1) as i32;
+        let tom_n = script::wrap(font, &turn.reply, LABEL_PX, width).len().min(10).max(1) as i32;
+        let you_h = 36 + you_n * 42 + 12;
+        out.push(ThreadBlock { turn: i, you: true, y0: y, y1: y + you_h, h: you_h });
+        y += you_h;
+        let tom_h = 36 + tom_n * 42 + 28;
+        out.push(ThreadBlock { turn: i, you: false, y0: y, y1: y + tom_h, h: tom_h });
+        y += tom_h;
+    }
+    out
+}
+
+fn thread_index_at(y: i32, scroll: i32, turns: &[crate::memory::ConversationRow]) -> Option<usize> {
+    if y >= SCREEN_H as i32 - THREAD_FOOTER { return None; }
+    // Font is needed for wrap counts; approximate with the same helper via a
+    // dummy layout using Liberation metrics already baked into wrap. Callers
+    // pass real turns; we reconstruct with the bundled UI font.
+    let font = FontRef::try_from_slice(UI_FONT_TTF).ok()?;
+    let blocks = thread_blocks(&font, turns);
+    let visible_h = SCREEN_H as i32 - THREAD_Y0 - THREAD_FOOTER;
+    let content_h = blocks.last().map(|b| b.y1).unwrap_or(0);
+    let max_off = (content_h - visible_h).max(0);
+    let offset = (max_off - scroll * SCROLL_STEP).max(0);
+    for b in &blocks {
+        let y0 = THREAD_Y0 + b.y0 - offset;
+        let y1 = y0 + b.h;
+        if y >= y0 && y < y1 { return Some(b.turn); }
+    }
+    None
+}
+
+fn selector_index_at(y: i32, n: usize, scroll: i32) -> Option<usize> {
+    if n == 0 { return None; }
+    let y0 = HEADER_H + 16;
+    if y < y0 { return None; }
+    let from_newest = ((y - y0) as usize / CONV_ROW_H) + scroll.max(0) as usize;
+    if from_newest < n { Some(n - 1 - from_newest) } else { None }
 }
 
 fn draw_corpus(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStore>, snap: &ContextSnapshot, scroll: i32) {
@@ -244,9 +329,16 @@ pub fn draw_settings(surf: &mut Surface, font: &FontRef, prefs: Preferences) -> 
 }
 
 pub fn settings_action(x: i32, y: i32) -> Action {
-    if x < 0 || x >= PANEL_W as i32 || y < 100 { return Action::Close; }
-    match y { 280..=365 => Action::SetMode(Mode::Stealth), 366..=460 => Action::SetMode(Mode::Guided),
-        500..=650 => Action::ToggleIdle, _ => Action::None }
+    if x < 0 || x >= PANEL_W as i32 { return Action::Close; }
+    if y < HEADER_H { return Action::Close; }
+    // Labels sit at 310 / 390 / 570; give each a full row so a slightly
+    // off tap still hits the control it is over.
+    match y {
+        250..=355 => Action::SetMode(Mode::Stealth),
+        356..=470 => Action::SetMode(Mode::Guided),
+        480..=680 => Action::ToggleIdle,
+        _ => Action::None,
+    }
 }
 
 fn panel_region() -> BBox {
@@ -294,18 +386,34 @@ mod tests {
     }
 
     #[test]
+    fn settings_labels_are_inside_their_hit_rows() {
+        assert_eq!(settings_action(40, 310), Action::SetMode(Mode::Stealth));
+        assert_eq!(settings_action(40, 390), Action::SetMode(Mode::Guided));
+        assert_eq!(settings_action(40, 570), Action::ToggleIdle);
+        assert_eq!(settings_action(40, 36), Action::Close);
+        assert_eq!(settings_action(PANEL_W as i32 + 8, 310), Action::Close);
+    }
+
+    #[test]
+    fn selector_lists_newest_conversation_first() {
+        assert_eq!(selector_index_at(HEADER_H + 20, 3, 0), Some(2));
+        assert_eq!(selector_index_at(HEADER_H + 16 + CONV_ROW_H as i32 + 10, 3, 0), Some(1));
+        assert_eq!(selector_index_at(10, 3, 0), None);
+    }
+
+    #[test]
     fn drawer_touch_cannot_create_ink_and_reopen_state_is_preserved() {
         let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
         let ptr = bytes.as_mut_ptr();
         let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
-        let mut drawer = Drawer::open(&surf, DrawerKind::History, Some(3), 2);
+        let mut drawer = Drawer::open(&surf, DrawerKind::History, Some(3), 2, None);
         let ink = crate::ink::Ink::new();
         assert_eq!(drawer.tap(200, 500, &None), Action::None);
         assert!(ink.is_empty(), "touch routing must not add page ink");
         let selection = drawer.selection;
         let scroll = drawer.scroll;
         drawer.close(&mut surf);
-        let reopened = Drawer::open(&surf, DrawerKind::History, selection, scroll);
+        let reopened = Drawer::open(&surf, DrawerKind::History, selection, scroll, None);
         assert_eq!(reopened.selection, Some(3));
         assert_eq!(reopened.scroll, 2);
     }

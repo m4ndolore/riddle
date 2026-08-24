@@ -15,11 +15,19 @@ const ABS_MT_POSITION_Y: u16 = 54;
 const ABS_MT_TRACKING_ID: u16 = 57;
 const EVIOCGRAB: libc::c_ulong = 0x40044590;
 const MAX_SLOTS: usize = 16;
-const TOUCH_MAX_X: i32 = 2064;
-const TOUCH_MAX_Y: i32 = 2832;
 const TAP_SLOP: i32 = 45;
 const EDGE_PX: i32 = 72;
 const SWIPE_PX: i32 = 120;
+// Paper Pro reports a larger raw range than the panel. rM2 pt_mt is already
+// panel-sized (1404×1872) with Y growing toward the physical top.
+#[cfg(not(feature = "rm2"))]
+const TOUCH_MAX_X: i32 = 2064;
+#[cfg(not(feature = "rm2"))]
+const TOUCH_MAX_Y: i32 = 2832;
+#[cfg(feature = "rm2")]
+const TOUCH_MAX_X: i32 = 1403;
+#[cfg(feature = "rm2")]
+const TOUCH_MAX_Y: i32 = 1871;
 // Require a deliberate hold before five-finger exit.  A single frame can be
 // produced by a writing-hand/palm contact on the reMarkable touch sensor.
 const FIVE_FINGER_HOLD_FRAMES: usize = 20;
@@ -193,7 +201,8 @@ impl TouchDevice {
                     3 => out.push(Gesture::Redo),
                     1 => {
                         if let Some(slot) = self.slots.iter().find(|s| s.start_y != i32::MIN && s.start_x != i32::MIN) {
-                            out.push(Gesture::Tap(screen_x(slot.x), screen_y(slot.y)));
+                            let (x, y) = map_touch(slot.x, slot.y);
+                            out.push(Gesture::Tap(x, y));
                         }
                     }
                     _ => {}
@@ -206,8 +215,9 @@ impl TouchDevice {
                     .filter(|slot| slot.start_y != i32::MIN && slot.start_x != i32::MIN)
                     .max_by_key(|slot| (slot.start_y - slot.y).abs() + (slot.start_x - slot.x).abs())
                 {
-                    out.push(classify_swipe(screen_x(slot.start_x), screen_y(slot.start_y),
-                        screen_x(slot.x), screen_y(slot.y)));
+                    let (x0, y0) = map_touch(slot.start_x, slot.start_y);
+                    let (x1, y1) = map_touch(slot.x, slot.y);
+                    out.push(classify_swipe(x0, y0, x1, y1));
                 }
             }
             self.max_fingers = 0;
@@ -219,8 +229,21 @@ impl TouchDevice {
     }
 }
 
-fn screen_x(raw: i32) -> i32 { raw.max(0) * fb::SCREEN_W as i32 / TOUCH_MAX_X }
-fn screen_y(raw: i32) -> i32 { raw.max(0) * fb::SCREEN_H as i32 / TOUCH_MAX_Y }
+#[cfg(not(feature = "rm2"))]
+fn map_touch(raw_x: i32, raw_y: i32) -> (i32, i32) {
+    (
+        raw_x.max(0) * fb::SCREEN_W as i32 / TOUCH_MAX_X,
+        raw_y.max(0) * fb::SCREEN_H as i32 / TOUCH_MAX_Y,
+    )
+}
+
+#[cfg(feature = "rm2")]
+fn map_touch(raw_x: i32, raw_y: i32) -> (i32, i32) {
+    // pt_mt origin is the physical bottom-left. Framebuffer y=0 is the top.
+    let x = raw_x.clamp(0, TOUCH_MAX_X) * (fb::SCREEN_W as i32 - 1) / TOUCH_MAX_X;
+    let y = (TOUCH_MAX_Y - raw_y.clamp(0, TOUCH_MAX_Y)) * (fb::SCREEN_H as i32 - 1) / TOUCH_MAX_Y;
+    (x, y)
+}
 
 fn classify_swipe(x0: i32, y0: i32, x1: i32, y1: i32) -> Gesture {
     let (dx, dy) = (x1 - x0, y1 - y0);
@@ -229,6 +252,8 @@ fn classify_swipe(x0: i32, y0: i32, x1: i32, y1: i32) -> Gesture {
     } else if dx <= -SWIPE_PX && dx.abs() > dy.abs() {
         Gesture::CloseDrawer
     } else if y0 <= EDGE_PX && dy >= SWIPE_PX && dy.abs() > dx.abs() {
+        Gesture::OpenControls
+    } else if y0 >= fb::SCREEN_H as i32 - EDGE_PX && dy <= -SWIPE_PX && dy.abs() > dx.abs() {
         Gesture::OpenControls
     } else {
         Gesture::Page((-dy).signum())
@@ -264,6 +289,21 @@ mod tests {
         assert_eq!(classify_swipe(20, 500, 240, 510), Gesture::OpenDrawer);
         assert_eq!(classify_swipe(200, 500, 210, 250), Gesture::Page(1));
         assert_eq!(classify_swipe(300, 500, 100, 510), Gesture::CloseDrawer);
+        assert_eq!(classify_swipe(200, 10, 210, 200), Gesture::OpenControls);
+        assert_eq!(
+            classify_swipe(200, fb::SCREEN_H as i32 - 10, 210, fb::SCREEN_H as i32 - 200),
+            Gesture::OpenControls
+        );
+    }
+
+    #[cfg(feature = "rm2")]
+    #[test]
+    fn rm2_touch_maps_panel_extents_with_y_inverted() {
+        assert_eq!(map_touch(0, 0), (0, fb::SCREEN_H as i32 - 1));
+        assert_eq!(map_touch(TOUCH_MAX_X, TOUCH_MAX_Y), (fb::SCREEN_W as i32 - 1, 0));
+        let (x, y) = map_touch(TOUCH_MAX_X / 2, TOUCH_MAX_Y / 2);
+        assert!(x > 600 && x < 800, "mid x was {x}");
+        assert!(y > 800 && y < 1100, "mid y was {y}");
     }
 }
 
